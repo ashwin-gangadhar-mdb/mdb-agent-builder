@@ -42,7 +42,8 @@ RUN mkdir -p /app/config /app/logs /app/prompts
 # Copy the application code
 COPY agent_builder/ /app/agent_builder/
 COPY prompts/ /app/prompts/
-COPY config/ /app/config/ 
+COPY config/ /app/config/
+COPY examples/ /app/examples/
 COPY startup.sh /app/
 
 # Make startup script executable

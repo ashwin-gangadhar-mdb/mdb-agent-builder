@@ -1,4 +1,4 @@
-.PHONY: clean install dev test lint format docker-build docker-run docker-debug setup-env create-config create-agent validate-config add-tool run serve build-package help verify reinstall
+.PHONY: clean install dev test lint format docker-build docker-run docker-debug setup-env create-config create-agent validate-config add-tool run serve serve-prod build-package help verify reinstall
 
 # Project variables
 PROJECT_NAME := maap-agent-builder
@@ -7,6 +7,13 @@ PIP := $(PYTHON) -m pip
 CONFIG_DIR := config
 LOGS_DIR := logs
 CONFIG_PATH := $(CONFIG_DIR)/agents.yaml
+
+# Server / multi-worker settings (override on the command line, e.g.
+#   make serve-prod GUNICORN_WORKERS=8 PORT=8080
+#   make docker-run GUNICORN_WORKERS=8)
+PORT ?= 5000
+GUNICORN_WORKERS ?= 4
+GUNICORN_TIMEOUT ?= 120
 
 help:
 	@echo "MAAP Agent Builder"
@@ -25,12 +32,16 @@ help:
 	@echo "  make build-package   Build package distribution files"
 	@echo "  make clean           Remove build artifacts and cache directories"
 	@echo "  make docker-build    Build Docker image"
-	@echo "  make docker-run      Run Docker container"
+	@echo "  make docker-run      Run Docker container (override GUNICORN_WORKERS, PORT)"
 	@echo "  make docker-debug    Start Docker container in interactive mode for debugging"
-	@echo "  make run             Run the agent server using local configuration"
+	@echo "  make run             Run the agent server (Flask dev server, single process)"
 	@echo "  make serve           Alias for 'make run'"
+	@echo "  make serve-prod      Run with Gunicorn (multi-worker, production-like)"
 	@echo "  make verify          Verify the installation and configuration"
 	@echo "  make reinstall       Reinstall the package after name changes"
+	@echo ""
+	@echo "Server vars (override on the command line):"
+	@echo "  PORT=$(PORT)  GUNICORN_WORKERS=$(GUNICORN_WORKERS)  GUNICORN_TIMEOUT=$(GUNICORN_TIMEOUT)"
 
 # Setup the environment and install dependencies
 setup-env:
@@ -95,7 +106,7 @@ create-agent:
 	fi
 	@read -p "Enter agent name: " agent_name; \
 	read -p "Enter agent type (react/tool_call/reflect/plan_execute_replan/long_term_memory): " agent_type; \
-	read -p "Enter LLM provider (openai/anthropic/fireworks/etc): " llm_provider; \
+	read -p "Enter LLM provider (bedrock/anthropic/fireworks/together/cohere/azure/ollama/sagemaker/grove): " llm_provider; \
 	read -p "Enter model name: " model_name; \
 	mkdir -p $(CONFIG_DIR); \
 	if [ -f $(CONFIG_PATH) ]; then \
@@ -133,13 +144,14 @@ create-agent:
 		echo "Created new agent configuration at $(CONFIG_PATH)"; \
 	fi
 
-# Validate the agents.yaml configuration
+# Validate the agents.yaml configuration (supports single 'agent' and
+# multi-agent 'agents' configurations).
 validate-config:
 	@echo "Validating agent configuration..."
 	@if [ -f $(CONFIG_PATH) ]; then \
 		$(PYTHON) -c "import yaml; yaml.safe_load(open('$(CONFIG_PATH)'))" && echo "Configuration is valid YAML."; \
 		echo "Checking for required keys..."; \
-		$(PYTHON) -c "import yaml; config = yaml.safe_load(open('$(CONFIG_PATH)')); assert 'agent' in config, 'Missing agent section'; assert 'name' in config['agent'], 'Missing agent name'; assert 'agent_type' in config['agent'], 'Missing agent type'; assert 'llm' in config['agent'], 'Missing LLM reference'; llm_name = config['agent']['llm']; llms = [l['name'] for l in config.get('llms', [])]; assert llm_name in llms, f'Referenced LLM {llm_name} not defined in llms section'" && echo "Configuration contains all required fields."; \
+		$(PYTHON) -c "import yaml; c=yaml.safe_load(open('$(CONFIG_PATH)')); llms={l['name'] for l in c.get('llms',[])}; ags=[c['agent']] if 'agent' in c else c.get('agents',[]); assert ags,'Missing agent/agents section'; assert all('name' in a for a in ags),'An agent is missing name'; assert all('agent_type' in a for a in ags),'An agent is missing agent_type'; assert all('llm' in a for a in ags),'An agent is missing llm reference'; bad=[a.get('name','?') for a in ags if a['llm'] not in llms]; assert not bad,f'Agents reference undefined LLMs: {bad}'" && echo "Configuration contains all required fields."; \
 	else \
 		echo "Configuration file not found at $(CONFIG_PATH). Use 'make create-config' to create it."; \
 		exit 1; \
@@ -202,27 +214,48 @@ docker-run:
 		echo "Warning: .env file not found. Environment variables will not be loaded."; \
 		echo "You may want to copy .env.example to .env and configure it."; \
 	fi
-	docker run -p 5000:5000 \
+	docker run -p $(PORT):$(PORT) \
 		-v $(PWD)/$(CONFIG_DIR):/app/config \
 		-v $(PWD)/$(LOGS_DIR):/app/logs \
 		-v $(PWD)/prompts:/app/prompts \
 		$(if $(wildcard .env),--env-file .env,) \
 		-e PYTHONPATH=/app \
 		-e AGENT_CONFIG_PATH=/app/config/agents.yaml \
+		-e PORT=$(PORT) \
+		-e GUNICORN_WORKERS=$(GUNICORN_WORKERS) \
+		-e GUNICORN_TIMEOUT=$(GUNICORN_TIMEOUT) \
 		$(PROJECT_NAME)
 
-# Run the agent server
+# Run the agent server (Flask dev server — single process, for local dev)
 run:
-	@echo "Running MAAP Agent Builder server..."
+	@echo "Running MAAP Agent Builder server (dev) on port $(PORT)..."
 	@if [ ! -f $(CONFIG_PATH) ]; then \
 		echo "Configuration file not found at $(CONFIG_PATH). Creating default configuration..."; \
 		make create-config; \
 	fi
 	export AGENT_CONFIG_PATH=$(CONFIG_PATH) && \
-	python -m agent_builder.cli serve --config $(CONFIG_PATH) --port 5000
+	$(PYTHON) -m agent_builder.cli serve --config $(CONFIG_PATH) --port $(PORT)
 
 # Alias for run
 serve: run
+
+# Run with Gunicorn — multi-worker, mirrors the production / Docker path.
+# Workers share conversation state via MongoDB when a 'state:' or
+# 'governance:' section is configured in the YAML.
+serve-prod:
+	@echo "Running MAAP Agent Builder with Gunicorn ($(GUNICORN_WORKERS) workers) on port $(PORT)..."
+	@if [ ! -f $(CONFIG_PATH) ]; then \
+		echo "Configuration file not found at $(CONFIG_PATH). Creating default configuration..."; \
+		$(MAKE) create-config; \
+	fi
+	AGENT_CONFIG_PATH=$(CONFIG_PATH) \
+	gunicorn \
+		--workers $(GUNICORN_WORKERS) \
+		--bind 0.0.0.0:$(PORT) \
+		--timeout $(GUNICORN_TIMEOUT) \
+		--access-logfile - \
+		--error-logfile - \
+		agent_builder.wsgi:application
 
 # Verify installation and configuration
 verify:
@@ -242,7 +275,7 @@ docker-debug:
 		echo "Warning: .env file not found. Environment variables will not be loaded."; \
 	fi
 	docker run -it --rm \
-		-p 5000:5000 \
+		-p $(PORT):$(PORT) \
 		-v $(PWD)/$(CONFIG_DIR):/app/config \
 		-v $(PWD)/$(LOGS_DIR):/app/logs \
 		-v $(PWD)/prompts:/app/prompts \
@@ -250,6 +283,9 @@ docker-debug:
 		-e PYTHONPATH=/app \
 		-e LOG_LEVEL=DEBUG \
 		-e AGENT_CONFIG_PATH=/app/config/agents.yaml \
+		-e PORT=$(PORT) \
+		-e GUNICORN_WORKERS=$(GUNICORN_WORKERS) \
+		-e GUNICORN_TIMEOUT=$(GUNICORN_TIMEOUT) \
 		$(PROJECT_NAME) /bin/bash
 
 # Default target
@@ -285,7 +321,7 @@ add-tool:
 		exit 1; \
 	fi; \
 	read -p "Enter tool name: " tool_name; \
-	read -p "Enter tool type (vector_search/mongodb_toolkit/nl_to_mql/mcp): " tool_type; \
+	read -p "Enter tool type (vector_search/full_text_search/mongodb_toolkit/nl_to_mql/mcp): " tool_type; \
 	read -p "Enter tool description: " tool_description; \
 	if grep -q "^tools:" $(CONFIG_PATH); then \
 		echo "\n# New tool configuration for $$tool_name" >> $(CONFIG_PATH); \
