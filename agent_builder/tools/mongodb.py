@@ -23,7 +23,6 @@ from langchain_mongodb.retrievers import MongoDBAtlasFullTextSearchRetriever
 from langgraph.prebuilt import create_react_agent
 from pymongo import MongoClient
 
-from agent_builder.utils.logger import AgentLogger
 from agent_builder.utils.logging_config import get_logger
 
 # Create module-level logger
@@ -52,9 +51,7 @@ class MongoDBTools:
         prefix_length: Optional[int] = 3,
     ):
         # Create class logger with appropriate name
-        self.logger = AgentLogger(
-            name=f"{__name__}.{self.__class__.__name__}"
-        ).get_logger()
+        self.logger = get_logger(f"{__name__}.{self.__class__.__name__}")
         self.logger.info("Initializing MongoDB tools for namespace: %s", namespace)
         self.name = name
         self.top_k = top_k
@@ -146,7 +143,7 @@ class MongoDBTools:
     def get_vector_retriever_tool(self):
         # Create tool-specific logger with tool name
         tool_logger_name = f"{__name__}.{self.__class__.__name__}.{self.name}"
-        tool_logger = AgentLogger(tool_logger_name).get_logger()
+        tool_logger = get_logger(tool_logger_name)
         tool_logger.info(f"Creating vector retriever tool: {self.name}")
 
         vector_retriever = self._init_vector_retriever()
@@ -164,26 +161,23 @@ class MongoDBTools:
             tool_logger.debug(f"Tool {self.name}: Query: {search_query}")
             try:
                 results = vector_retriever.invoke(search_query)
-                if not results:
-                    tool_logger.warning(
-                        f"Tool {self.name}: No results found for the query"
-                    )
-                    raise ToolException("No results found for the query.")
-
-                tool_logger.info(
-                    f"Tool {self.name}: Found {len(results)} relevant documents"
-                )
-                context = "Retrieved Documents:\n\n" + "\n\n".join(
-                    f"text_{i}: {doc.page_content} \nsource_{i}: {doc.metadata.get('source', 'N/A')}"
-                    for i, doc in enumerate(results)
-                )
-                return context
             except Exception as e:
-                tool_logger.error(
-                    f"Tool {self.name}: Failed to retrieve relevant information"
-                )
+                # A genuine retrieval error: surface it as a ToolException so the
+                # agent framework can handle it, instead of masking it as data.
                 tool_logger.exception(f"Tool {self.name}: Error during retrieval: {e}")
-                return "Retrieval failed."
+                raise ToolException(f"Vector retrieval failed: {e}") from e
+
+            if not results:
+                tool_logger.warning(f"Tool {self.name}: No results found for the query")
+                return "No results found for the query."
+
+            tool_logger.info(
+                f"Tool {self.name}: Found {len(results)} relevant documents"
+            )
+            return "Retrieved Documents:\n\n" + "\n\n".join(
+                f"text_{i}: {doc.page_content} \nsource_{i}: {doc.metadata.get('source', 'N/A')}"
+                for i, doc in enumerate(results)
+            )
 
         return vector_retriever_tool
 
@@ -193,7 +187,7 @@ class MongoDBTools:
         """
         # Create tool-specific logger with tool name
         tool_logger_name = f"{__name__}.{self.__class__.__name__}.{self.name}"
-        tool_logger = AgentLogger(tool_logger_name).get_logger()
+        tool_logger = get_logger(tool_logger_name)
         tool_logger.info(f"Creating full-text search tool: {self.name}")
         full_text_search_retriever = self._init_full_text_retriever()
 
@@ -210,7 +204,7 @@ class MongoDBTools:
             tool_logger.debug(f"Tool {self.name}: Query: {query}")
             if not query:
                 tool_logger.warning(
-                    "Tool {self.name}: Empty query provided for full-text search"
+                    f"Tool {self.name}: Empty query provided for full-text search"
                 )
                 return "Empty query provided for full-text search."
             try:
@@ -243,9 +237,7 @@ class MongoDBTools:
 
     def get_mdb_toolkit(self, llm):
         name = self.name
-        toolkit_logger = AgentLogger(
-            f"{__name__}.{self.__class__.__name__}.{name}"
-        ).get_logger()
+        toolkit_logger = get_logger(f"{__name__}.{self.__class__.__name__}.{name}")
         toolkit_logger.info(f"Creating MongoDB toolkit: {name}")
         if llm is None:
             toolkit_logger.error("LLM must be provided to create the toolkit")
@@ -267,7 +259,7 @@ class MongoDBTools:
         # Create tool-specific logger with tool name
         name = self.name
         tool_logger_name = f"{__name__}.{self.__class__.__name__}.{name}"
-        tool_logger = AgentLogger(tool_logger_name).get_logger()
+        tool_logger = get_logger(tool_logger_name)
         tool_logger.info(f"Creating NL to MQL tool: {name}")
 
         if llm is None:
@@ -281,7 +273,7 @@ class MongoDBTools:
 
         tool_logger.debug("Creating React agent for NL to MQL conversion")
         tool_logger.debug(f"System message for agent: {system_message}")
-        agent = create_react_agent(model=llm, tools=tools, debug=True)
+        agent = create_react_agent(model=llm, tools=tools)
 
         @tool
         def nl_to_mql_tool(nl_query: str) -> str:

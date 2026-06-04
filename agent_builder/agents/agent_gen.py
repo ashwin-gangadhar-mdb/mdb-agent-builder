@@ -7,9 +7,7 @@ of agent modules to avoid circular dependencies.
 """
 
 from enum import Enum
-from typing import Any, Dict, TypeVar, cast
-
-from langgraph.prebuilt import create_react_agent  # type:ignore
+from typing import Any, Dict, List, Tuple, TypeVar, cast
 
 from agent_builder.utils.logging_config import get_logger
 
@@ -17,6 +15,13 @@ from agent_builder.utils.logging_config import get_logger
 logger = get_logger(__name__)
 
 AgentReturnType = TypeVar("AgentReturnType")
+
+
+def create_react_agent(*args: Any, **kwargs: Any) -> Any:
+    """Create a LangGraph ReAct agent while keeping LangGraph lazily imported."""
+    from langgraph.prebuilt import create_react_agent as langgraph_create_react_agent
+
+    return langgraph_create_react_agent(*args, **kwargs)
 
 
 class AgentType(Enum):
@@ -27,7 +32,7 @@ class AgentType(Enum):
     LONG_TERM_MEMORY = "long_term_memory"
 
     @classmethod
-    def get_available_types(cls) -> list[str]:
+    def get_available_types(cls) -> List[str]:
         """Return a list of all available agent types as strings."""
         return [agent_type.value for agent_type in cls]
 
@@ -38,8 +43,11 @@ class AgentFactory:
     Lazily imports agent modules to avoid circular dependencies.
     """
 
-    # Map agent types to their creator function modules and names
-    _AGENT_CREATORS: Dict[AgentType, tuple[str, str]] = {
+    # Map agent types to their creator function modules and names.
+    # NOTE: TOOL_CALL and REACT are intentionally aliases — LangGraph's
+    # ``create_react_agent`` already drives an OpenAI-style tool-calling loop,
+    # so both types resolve to the same creator.
+    _AGENT_CREATORS: Dict[AgentType, Tuple[str, str]] = {
         AgentType.TOOL_CALL: ("agent_builder.agents.agent_gen", "create_react_agent"),
         AgentType.REACT: ("agent_builder.agents.agent_gen", "create_react_agent"),
         AgentType.REFLECT: (
@@ -138,9 +146,3 @@ class AgentFactory:
             function_name,
         )
         cls._AGENT_CREATORS[agent_type] = (module_path, function_name)
-
-
-# if __name__=="__main__":
-#     # Example usage
-#     factory = AgentFactory()
-#     agent = factory.create_agent(AgentType.REACT, llm="example_llm", tools=["example_tool"])

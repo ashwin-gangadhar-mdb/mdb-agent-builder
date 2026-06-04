@@ -175,6 +175,24 @@ checkpointer:
   collection_name: checkpoints
   name: rag_agent_checkpointer
 
+# Optional MongoDB-backed governance controls
+governance:
+  enabled: true
+  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+  db_name: agent_control_plane
+  default_policy:
+    permissions:
+      - "*"
+  policy:
+    provider: mongodb
+    collection_name: agent_policies
+  audit:
+    enabled: true
+    collection_name: agent_audit_events
+  state:
+    enabled: true
+    collection_name: agent_sessions
+
 # Configure the agent
 agent:
   name: rag_react_agent

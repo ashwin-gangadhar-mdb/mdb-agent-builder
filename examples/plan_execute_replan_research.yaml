@@ -1,0 +1,27 @@
+# Plan-execute-replan pattern: plan work, execute one step, then replan.
+llms:
+  - name: local_llm
+    provider: ollama
+    model_name: llama3.1
+    temperature: 0.2
+    additional_kwargs:
+      base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+
+tools:
+  - name: research_search
+    tool_type: full_text_search
+    description: Search research notes and internal documents.
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: maap_examples.research_notes
+    additional_kwargs:
+      index_name: full_text_index
+      text_field: text
+      top_k: 5
+
+agent:
+  name: plan_execute_replan_research
+  agent_type: plan_execute_replan
+  llm: local_llm
+  tools:
+    - research_search
+  system_prompt_path: ./examples/prompts/plan_execute_system.txt

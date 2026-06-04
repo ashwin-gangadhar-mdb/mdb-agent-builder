@@ -1,3 +1,9 @@
+"""
+Agent loader for various agent types using the MAAP Agent Builder.
+This module provides functionality to load different types of agents
+including React, Reflection, Plan-Execute-Replan, and Long-Term Memory agents.
+"""
+
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Type, Union
@@ -6,18 +12,14 @@ from langchain_core.language_models import BaseLLM
 from langchain_core.tools import BaseTool
 
 from agent_builder.agents.agent_gen import AgentFactory, AgentType
+from agent_builder.core.interfaces import (
+    BaseEpisodicMemoryAdapter,
+    BaseObservationalMemoryAdapter,
+)
 from agent_builder.utils.checkpointer import get_mongodb_checkpointer
-from agent_builder.utils.logger import logger
 from agent_builder.utils.logging_config import get_logger
 
-"""
-Agent loader for various agent types using the MAAP Agent Builder.
-This module provides functionality to load different types of agents
-including React, Reflection, Plan-Execute-Replan, and Long-Term Memory agents.
-"""
-
-# # Set up module logger
-# logger = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -36,6 +38,12 @@ class AgentConfig:
     checkpointer_config: Optional[Dict[str, Any]] = None
     connection_str: Optional[str] = None
     namespace: Optional[str] = None
+    # ── Memory adapters (adapter-powered path) ──────────────────────────
+    # When supplied, the long_term_memory agent uses these adapters instead
+    # of the legacy hard-coded HuggingFace + MongoDBAtlasVectorSearch path.
+    episodic_memory: Optional[BaseEpisodicMemoryAdapter] = None
+    observational_memory: Optional[BaseObservationalMemoryAdapter] = None
+    # ── Catch-all ───────────────────────────────────────────────────────
     additional_kwargs: Optional[Dict[str, Any]] = None
 
 
@@ -175,22 +183,22 @@ def load_agent(config: AgentConfig) -> Any:
     if agent_type in ["react", "tool_call"]:
         agent_kwargs["prompt"] = system_prompt
     elif agent_type == "reflect":
-        # Basic reflection agent needs both generate and reflection prompts
-        if config.additional_kwargs and "reflection_prompt" in config.additional_kwargs:
-            agent_kwargs["generate_prompt"] = system_prompt
-            agent_kwargs["reflection_prompt"] = reflection_prompt
-        else:
-            logger.error(
-                "Reflection agent requires a reflection_prompt in additional_kwargs"
-            )
-            raise ValueError(
-                "Reflection agent requires a reflection_prompt in additional_kwargs"
-            )
+        # Basic reflection agent needs both generate and reflection prompts.
+        agent_kwargs["generate_prompt"] = system_prompt
+        agent_kwargs["reflection_prompt"] = reflection_prompt
     elif agent_type == "plan_execute_replan":
         agent_kwargs["execute_prompt"] = system_prompt
     elif agent_type == "long_term_memory":
-        agent_kwargs["connection_str"] = config.connection_str
-        agent_kwargs["namespace"] = config.namespace
+        # Adapter-powered path takes precedence when adapters are supplied.
+        if config.episodic_memory or config.observational_memory:
+            if config.episodic_memory:
+                agent_kwargs["episodic_memory"] = config.episodic_memory
+            if config.observational_memory:
+                agent_kwargs["observational_memory"] = config.observational_memory
+        else:
+            # Legacy path: pass raw connection params.
+            agent_kwargs["connection_str"] = config.connection_str
+            agent_kwargs["namespace"] = config.namespace
 
     # Add checkpointer if available
     if checkpointer:

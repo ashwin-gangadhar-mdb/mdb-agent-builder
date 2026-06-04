@@ -1,12 +1,13 @@
 import os
 
 from agent_builder.app import create_app
-from agent_builder.utils.logger import logger
-from agent_builder.utils.logging_config import configure_logging
+from agent_builder.utils.logging_config import configure_logging, get_logger
 
-# Configure logging
+# Configure logging (configure_logging accepts a string level name directly)
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-configure_logging(level=getattr(logging, log_level, logging.INFO))
+configure_logging(level=log_level)
+
+logger = get_logger(__name__)
 
 # Get configuration path from environment
 config_path = os.environ.get("AGENT_CONFIG_PATH")

@@ -1,0 +1,51 @@
+# ReAct RAG pattern: MongoDB vector + full-text retrieval with checkpointing.
+embeddings:
+  - name: local_embeddings
+    provider: huggingface
+    model_name: sentence-transformers/all-MiniLM-L6-v2
+
+llms:
+  - name: local_llm
+    provider: ollama
+    model_name: llama3.1
+    temperature: 0.2
+    additional_kwargs:
+      base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+
+tools:
+  - name: knowledge_vector_search
+    tool_type: vector_search
+    description: Retrieve semantically relevant knowledge-base documents.
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: maap_examples.knowledge_base
+    embedding_model: local_embeddings
+    additional_kwargs:
+      index_name: vector_index
+      text_field: text
+      embedding_field: embedding
+      top_k: 5
+      min_score: 0.7
+  - name: knowledge_full_text_search
+    tool_type: full_text_search
+    description: Retrieve keyword matches from the knowledge base.
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: maap_examples.knowledge_base
+    additional_kwargs:
+      index_name: full_text_index
+      text_field: text
+      top_k: 5
+
+checkpointer:
+  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+  db_name: maap_examples_state
+  collection_name: rag_checkpoints
+  name: rag_checkpointer
+
+agent:
+  name: react_rag_mongodb
+  agent_type: react
+  llm: local_llm
+  tools:
+    - knowledge_vector_search
+    - knowledge_full_text_search
+  system_prompt_path: ./examples/prompts/react_rag_system.txt

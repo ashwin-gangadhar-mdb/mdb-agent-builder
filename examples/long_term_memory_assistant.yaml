@@ -1,0 +1,61 @@
+# Long-term memory pattern: adapter-powered episodic + observational memory.
+#
+# Two MongoDB Atlas Vector Search collections are used:
+#   • episodic_memories  — verbatim fragments saved by the LLM at runtime
+#   • observational_memories — LLM-extracted facts / preferences / patterns
+#
+# Both are backed by the adapter framework introduced in the memory refactor.
+# The legacy mode (connection_str + namespace directly on the agent) still
+# works if you remove the memory: section.
+
+llms:
+  - name: local_llm
+    provider: ollama
+    model_name: llama3.1
+    temperature: 0.4
+    additional_kwargs:
+      base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+
+embeddings:
+  - name: local_embedding
+    provider: huggingface
+    model_name: sentence-transformers/all-MiniLM-L6-v2
+
+checkpointer:
+  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+  db_name: maap_examples_state
+  collection_name: memory_checkpoints
+  name: memory_checkpointer
+
+# ── Memory adapter configuration ────────────────────────────────────────────
+# Both adapters reference the embeddings and llms sections above by name.
+# You can omit either entry to disable that memory type.
+memory:
+  - name: recall                          # episodic — verbatim fragments
+    memory_type: episodic
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: maap_examples.episodic_memories
+    embedding_model: local_embedding      # reference → embeddings[name]
+    index_name: episodic_memory_index
+
+  - name: observations                    # observational — LLM-distilled facts
+    memory_type: observational
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: maap_examples.observational_memories
+    embedding_model: local_embedding      # reference → embeddings[name]
+    llm: local_llm                        # reference → llms[name]
+    index_name: observational_memory_index
+    # extraction_prompt: |                # optional — override default prompt
+    #   Extract key user facts from the following text as a JSON array of
+    #   concise strings. Text: {text} Facts:
+
+# ── Agent configuration ──────────────────────────────────────────────────────
+# episodic_memory and observational_memory reference the memory adapter names
+# above.  Both are optional — omit either to disable that memory tier.
+agent:
+  name: long_term_memory_assistant
+  agent_type: long_term_memory
+  llm: local_llm
+  episodic_memory: recall               # reference → memory[name]
+  observational_memory: observations    # reference → memory[name]
+  tools: []

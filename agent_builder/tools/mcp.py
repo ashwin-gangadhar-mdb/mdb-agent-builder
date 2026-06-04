@@ -13,21 +13,43 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent_builder.utils.logging_config import get_logger
 
-# Import MCP-related libraries
-try:
-    from langchain_mcp_adapters.client import MultiServerMCPClient
-    from langchain_mcp_adapters.tools import load_mcp_tools, to_fastmcp
-    from mcp import ClientSession
-    from mcp.client.stdio import stdio_client
-    from mcp.client.streamable_http import streamablehttp_client
-except ImportError:
-    raise ImportError(
-        "MCP integration requires additional dependencies. "
-        "Please install them with: pip install langchain-mcp-adapters mcp"
-    )
-
 # Set up module logger
 logger = get_logger(__name__)
+
+_MCP_IMPORT_ERROR = (
+    "MCP integration requires additional dependencies. "
+    "Please install them with: pip install langchain-mcp-adapters mcp"
+)
+
+
+def _require_mcp() -> Dict[str, Any]:
+    """Import the optional MCP dependencies on demand.
+
+    The MCP extras are optional, so we import them lazily here rather than at
+    module load time.  Importing them eagerly would make the entire
+    ``agent_builder.tools`` package fail to import whenever MCP is not
+    installed, even for users who never use MCP tools.
+
+    Raises:
+        ImportError: with installation guidance if the extras are missing.
+    """
+    try:
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        from langchain_mcp_adapters.tools import load_mcp_tools, to_fastmcp
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+        from mcp.client.streamable_http import streamablehttp_client
+    except ImportError as exc:
+        raise ImportError(_MCP_IMPORT_ERROR) from exc
+
+    return {
+        "MultiServerMCPClient": MultiServerMCPClient,
+        "load_mcp_tools": load_mcp_tools,
+        "to_fastmcp": to_fastmcp,
+        "ClientSession": ClientSession,
+        "stdio_client": stdio_client,
+        "streamablehttp_client": streamablehttp_client,
+    }
 
 
 class MCPToolManager:
@@ -70,6 +92,12 @@ class MCPToolManager:
         Raises:
             ValueError: If the transport is not supported or configuration is invalid
         """
+        mcp = _require_mcp()
+        stdio_client = mcp["stdio_client"]
+        streamablehttp_client = mcp["streamablehttp_client"]
+        ClientSession = mcp["ClientSession"]
+        load_mcp_tools = mcp["load_mcp_tools"]
+
         # Get the transport type, defaulting to stdio if not specified
         transport = config.get("transport", "stdio").lower()
         logger.info(
@@ -83,7 +111,7 @@ class MCPToolManager:
             # Validate required configuration
             if not config.get("command"):
                 raise ValueError(
-                    "Server '%s' config must include 'command'", server_name
+                    f"Server '{server_name}' config must include 'command'"
                 )
 
             # Get command and arguments
@@ -117,7 +145,7 @@ class MCPToolManager:
         elif transport in ["streamable_http", "streamable-http"]:
             # Validate required configuration
             if not config.get("url"):
-                raise ValueError("Server '%s' config must include 'url'", server_name)
+                raise ValueError(f"Server '{server_name}' config must include 'url'")
 
             # Get URL and optional headers
             url = config["url"]
@@ -160,6 +188,7 @@ class MCPToolManager:
         """
         logger.info("Loading MCP tools from %d servers", len(servers_config))
 
+        MultiServerMCPClient = _require_mcp()["MultiServerMCPClient"]
         client = MultiServerMCPClient(servers_config)
         all_tools = await client.get_tools()
 
@@ -365,4 +394,5 @@ def convert_langchain_tool_to_mcp(langchain_tool) -> Any:
         mcp_tool = convert_langchain_tool_to_mcp(add)
         ```
     """
+    to_fastmcp = _require_mcp()["to_fastmcp"]
     return to_fastmcp(langchain_tool)

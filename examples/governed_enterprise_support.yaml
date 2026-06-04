@@ -1,0 +1,59 @@
+# Governed enterprise pattern: MongoDB policies, audit, state, and retrieval.
+embeddings:
+  - name: local_embeddings
+    provider: huggingface
+    model_name: sentence-transformers/all-MiniLM-L6-v2
+
+llms:
+  - name: local_llm
+    provider: ollama
+    model_name: llama3.1
+    temperature: 0.1
+    additional_kwargs:
+      base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+
+tools:
+  - name: support_docs
+    tool_type: vector_search
+    description: Search authorized support documentation.
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: maap_examples.support_docs
+    embedding_model: local_embeddings
+    additional_kwargs:
+      index_name: vector_index
+      text_field: text
+      embedding_field: embedding
+      top_k: 4
+      min_score: 0.7
+
+governance:
+  enabled: true
+  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+  db_name: maap_examples_control_plane
+  default_policy:
+    permissions:
+      - tools.call.support_docs
+    denied_tools: []
+    blocked_topics:
+      - payroll export
+    retrieval_filters:
+      classification:
+        - public
+        - internal
+  policy:
+    provider: mongodb
+    collection_name: agent_policies
+  audit:
+    enabled: true
+    collection_name: agent_audit_events
+  state:
+    enabled: true
+    collection_name: agent_sessions
+
+agent:
+  name: governed_enterprise_support
+  agent_type: react
+  llm: local_llm
+  tools:
+    - support_docs
+  system_prompt_path: ./examples/prompts/governed_support_system.txt

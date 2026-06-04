@@ -9,9 +9,20 @@ import os
 import uuid
 from typing import Any, Dict, Optional
 
-from dotenv import load_dotenv
-from flask import Flask, jsonify, request, session
+try:
+    from dotenv import load_dotenv
+except ImportError:  # python-dotenv is an optional convenience dependency
+    def load_dotenv(*args: Any, **kwargs: Any) -> bool:
+        return False
 
+from flask import Flask, jsonify, request
+
+from agent_builder.audit.mongodb_audit import MongoDBAuditProvider
+from agent_builder.core.interfaces import BaseAuditAdapter, BasePolicyAdapter, BaseStateAdapter
+from agent_builder.core.types import AuditEvent, IdentityContext
+from agent_builder.security.guardrails import GuardrailEngine
+from agent_builder.security.policies import MongoDBPolicyProvider, StaticPolicyProvider
+from agent_builder.state.mongodb_state import MongoDBStateProvider
 from agent_builder.utils.logging_config import get_logger
 from agent_builder.yaml_loader import load_application
 
@@ -27,13 +38,28 @@ class AgentApp:
     Flask application for serving agents loaded from YAML configurations.
     """
 
-    def __init__(self, config_path: str, session_ttl: int = 3600):
+    def __init__(
+        self,
+        config_path: str,
+        session_ttl: int = 3600,
+        max_history_messages: int = 100,
+        max_threads: int = 1000,
+    ):
         """
         Initialize the agent application with the specified YAML configuration.
 
         Args:
             config_path: Path to the YAML configuration file
             session_ttl: Time-to-live for session data in seconds (default: 1 hour)
+            max_history_messages: Cap on retained messages per thread in the
+                process-local history (prevents unbounded growth).
+            max_threads: Cap on the number of threads held in process-local
+                history before the oldest is evicted.
+
+        Note:
+            ``chat_histories`` is **process-local** and is not shared across
+            multiple gunicorn workers.  Configure a ``state`` provider or a
+            LangGraph checkpointer for durable, cross-worker conversation state.
         """
         self.app = Flask(__name__)
         self.app.secret_key = os.environ.get("FLASK_SECRET_KEY", str(uuid.uuid4()))
@@ -41,7 +67,19 @@ class AgentApp:
         self.config_path = config_path
         self.components = None
         self.agent = None
-        self.chat_histories = {}  # Store chat histories by thread_id
+        self.chat_histories = {}  # Process-local chat histories keyed by thread_id
+        self.max_history_messages = max_history_messages
+        self.max_threads = max_threads
+        # Set once the agent is loaded; controls whether the app forwards its
+        # own history or lets the agent's checkpointer manage conversation state.
+        self._agent_has_checkpointer = False
+        self.governance_enabled = False
+        self.guardrails = GuardrailEngine()
+        # Typed against the adapter interfaces — concrete backends are injected
+        # in configure_governance() so callers remain backend-agnostic.
+        self.policy_provider: BasePolicyAdapter = StaticPolicyProvider()
+        self.audit_provider: Optional[BaseAuditAdapter] = None
+        self.state_provider: Optional[BaseStateAdapter] = None
 
         # Register routes
         self.register_routes()
@@ -64,10 +102,212 @@ class AgentApp:
                 logger.error("Agent object not properly initialized")
                 raise ValueError("Failed to initialize agent")
 
+            # If the agent persists its own state via a checkpointer, the app
+            # should not also forward its history (which would duplicate turns
+            # in the checkpointed state).
+            self._agent_has_checkpointer = bool(
+                getattr(self.agent, "checkpointer", None)
+            )
+
+            self.configure_governance()
+
             logger.info("Agent successfully loaded from %s", self.config_path)
         except Exception as e:
             logger.error("Failed to load application components: %s", str(e))
             raise
+
+    def configure_governance(self):
+        """Configure optional MongoDB-backed policy, audit, and state providers."""
+        governance_config = (self.components or {}).get("governance_config", {}) or {}
+        self.governance_enabled = bool(governance_config.get("enabled", False))
+
+        if self.governance_enabled:
+            connection_str = governance_config.get("connection_str")
+            db_name = governance_config.get("db_name", "agent_control_plane")
+            default_policy = governance_config.get("default_policy", {"permissions": ["*"]})
+
+            policy_config = governance_config.get("policy", {}) or {}
+            if connection_str and policy_config.get("provider", "mongodb") == "mongodb":
+                self.policy_provider = MongoDBPolicyProvider(
+                    connection_str=connection_str,
+                    db_name=policy_config.get("db_name", db_name),
+                    collection_name=policy_config.get("collection_name", "agent_policies"),
+                    default_policy=default_policy,
+                )
+            else:
+                self.policy_provider = StaticPolicyProvider(default_policy)
+
+            audit_config = governance_config.get("audit", {}) or {}
+            if connection_str and audit_config.get("enabled", True):
+                self.audit_provider = MongoDBAuditProvider(
+                    connection_str=connection_str,
+                    db_name=audit_config.get("db_name", db_name),
+                    collection_name=audit_config.get("collection_name", "agent_audit_events"),
+                )
+
+            state_config = governance_config.get("state", {}) or {}
+            if connection_str and state_config.get("enabled", True):
+                self.state_provider = MongoDBStateProvider(
+                    connection_str=connection_str,
+                    db_name=state_config.get("db_name", db_name),
+                    collection_name=state_config.get("collection_name", "agent_sessions"),
+                )
+
+            logger.info("Governance controls enabled")
+        else:
+            logger.info("Governance controls disabled")
+
+        # Standalone state config — activated independently of governance, enabling
+        # cross-worker session state without requiring the full governance stack.
+        if self.state_provider is None:
+            state_standalone = (self.components or {}).get("state_config", {}) or {}
+            standalone_conn = state_standalone.get("connection_str")
+            if standalone_conn and state_standalone.get("enabled", True):
+                self.state_provider = MongoDBStateProvider(
+                    connection_str=standalone_conn,
+                    db_name=state_standalone.get("db_name", "agent_state"),
+                    collection_name=state_standalone.get(
+                        "collection_name", "agent_sessions"
+                    ),
+                )
+                logger.info("Standalone state provider configured for multi-worker deployments")
+
+    def record_audit(
+        self,
+        event_type: str,
+        identity: IdentityContext,
+        thread_id: Optional[str],
+        payload: Optional[Dict[str, Any]] = None,
+    ):
+        """Record an audit event without failing the user request on audit errors."""
+        if not self.audit_provider:
+            return
+        try:
+            agent_name = None
+            if self.components and "agent" in self.components:
+                agent_name = getattr(self.components["agent"], "name", None)
+            self.audit_provider.record(
+                AuditEvent(
+                    event_type=event_type,
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    agent_id=agent_name,
+                    thread_id=thread_id,
+                    payload=payload or {},
+                )
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning("Failed to record audit event %s: %s", event_type, str(e))
+
+    def _build_run_config(
+        self,
+        request_config: Dict[str, Any],
+        thread_id: str,
+        identity: IdentityContext,
+    ) -> Dict[str, Any]:
+        """Build a LangGraph run config.
+
+        LangGraph checkpointers and memory-aware agents read ``thread_id`` and
+        identity fields from ``config['configurable']`` — not from the top
+        level — so we place them there explicitly while preserving any other
+        run options (e.g. ``recursion_limit``) the caller supplied.
+        """
+        run_config = dict(request_config or {})
+        run_config.pop("identity", None)
+        configurable = dict(run_config.get("configurable") or {})
+        configurable.setdefault("thread_id", thread_id)
+        configurable.setdefault("user_id", identity.user_id)
+        configurable.setdefault("tenant_id", identity.tenant_id)
+        configurable.setdefault("roles", list(identity.roles))
+        run_config["configurable"] = configurable
+        return run_config
+
+    def _invoke_agent(
+        self,
+        user_message: str,
+        chat_history: list,
+        extra_inputs: Dict[str, Any],
+        run_config: Dict[str, Any],
+    ) -> str:
+        """Invoke the loaded agent and return its textual response.
+
+        Raises whatever the agent raises; callers translate that into an HTTP
+        error response rather than persisting an error string as a reply.
+        """
+        if hasattr(self.agent, "invoke"):
+            # With a checkpointer the agent accumulates history per thread, so
+            # only the new turn is sent; otherwise the app-managed history
+            # supplies the conversational context.
+            if self._agent_has_checkpointer:
+                messages = [("user", user_message)]
+            else:
+                messages = chat_history + [("user", user_message)]
+            input_data: Dict[str, Any] = {"messages": messages}
+            for key, value in extra_inputs.items():
+                if key not in ("message", "history"):
+                    input_data[key] = value
+            response = self.agent.invoke(input_data, config=run_config)
+            return self._extract_response(response)
+
+        # Legacy callable-agent fallback.
+        logger.warning("Using legacy agent format")
+        return str(self.agent(user_message))
+
+    @staticmethod
+    def _extract_response(response: Any) -> str:
+        """Extract the assistant's text from a LangGraph/legacy agent response."""
+        if isinstance(response, dict) and "messages" in response:
+            messages = response["messages"]
+            if not messages:
+                return "No response from agent"
+            last_message = messages[-1]
+            if isinstance(last_message, tuple) and len(last_message) >= 2:
+                return last_message[1]
+            if hasattr(last_message, "content"):
+                return last_message.content
+            return str(last_message)
+        return str(response)
+
+    def _load_history(self, thread_id: str) -> list:
+        """Return chat history for *thread_id*.
+
+        When a state provider is configured, the authoritative copy lives in
+        MongoDB so every Gunicorn worker sees the same state.  The process-local
+        dict is used as a fallback (e.g. when the agent has its own checkpointer
+        and no state provider is configured, or when the DB is temporarily
+        unavailable).
+        """
+        if self.state_provider:
+            try:
+                doc = self.state_provider.load_thread(thread_id)
+                if doc:
+                    raw = doc.get("state", {}).get("history", [])
+                    # MongoDB round-trips tuples as lists; restore tuple form so
+                    # the rest of the code can rely on a consistent type.
+                    return [tuple(m) if isinstance(m, list) else m for m in raw]
+            except Exception as e:  # pylint: disable=broad-except
+                logger.warning("Failed to load thread state from provider: %s", e)
+        return list(self.chat_histories.get(thread_id, []))
+
+    def _store_history(self, thread_id: str, history: list) -> list:
+        """Persist process-local history for *thread_id* with bounded growth."""
+        if self.max_history_messages and len(history) > self.max_history_messages:
+            history = history[-self.max_history_messages:]
+        # Evict the oldest thread when the cap is exceeded (insertion-order FIFO).
+        if (
+            thread_id not in self.chat_histories
+            and self.max_threads
+            and len(self.chat_histories) >= self.max_threads
+        ):
+            oldest = next(iter(self.chat_histories))
+            self.chat_histories.pop(oldest, None)
+            logger.info(
+                "Evicted oldest in-memory thread %s (cap=%d)",
+                oldest,
+                self.max_threads,
+            )
+        self.chat_histories[thread_id] = history
+        return history
 
     def register_routes(self):
         """Register API routes for the Flask application."""
@@ -85,109 +325,133 @@ class AgentApp:
             if not self.agent:
                 return jsonify({"error": "Agent not loaded"}), 503
 
+            data = request.get_json(silent=True)
+            if not data or "message" not in data:
+                return jsonify({"error": "Missing required field: message"}), 400
+
+            # Work on a shallow copy so the parsed request body is never mutated.
+            data = dict(data)
+            request_config = data.pop("config", None) or {}
+            if not request_config:
+                logger.warning("No config provided in request, using empty config")
+
+            thread_id = request_config.get("thread_id") or str(uuid.uuid4())
+            user_message = data.pop("message")
+            identity = IdentityContext.from_config(request_config)
+            policy = self.policy_provider.get_policy(identity)
+
+            # ── input guardrail ──────────────────────────────────────────────
+            if self.governance_enabled:
+                decision = self.guardrails.check_input(user_message, policy)
+                self.record_audit(
+                    "guardrail.input",
+                    identity,
+                    thread_id,
+                    {
+                        "allowed": decision.allowed,
+                        "reason": decision.reason,
+                        "stage": decision.stage,
+                    },
+                )
+                if not decision.allowed:
+                    return (
+                        jsonify(
+                            {
+                                "error": "Request blocked by input guardrail",
+                                "reason": decision.reason,
+                                "thread_id": thread_id,
+                            }
+                        ),
+                        403,
+                    )
+                user_message = decision.transformed_text or user_message
+
+            logger.info(
+                "Received chat request: %s... for thread %s",
+                user_message[:50],
+                thread_id,
+            )
+
+            chat_history = self._load_history(thread_id)
+            run_config = self._build_run_config(request_config, thread_id, identity)
+
+            # ── invoke the agent ─────────────────────────────────────────────
             try:
-                data = request.json
-                if not data or "message" not in data:
-                    return jsonify({"error": "Missing required field: message"}), 400
-
-                # Get configuration from request
-                if "config" not in data:
-                    config = {}
-                    logger.warning("No config provided in request, using empty config")
-                else:
-                    config = data["config"]
-                    del data["config"]  # Remove config from the main data
-
-                # Get thread_id from config or generate a new one
-                thread_id = config.get("thread_id", str(uuid.uuid4()))
-                config["thread_id"] = thread_id  # Ensure thread_id is in config
-
-                user_message = data["message"]
-                logger.info(
-                    f"Received chat request with message: {user_message[:50]}... for thread {thread_id}"
+                agent_response = self._invoke_agent(
+                    user_message, chat_history, data, run_config
+                )
+            except Exception as agent_error:  # pylint: disable=broad-except
+                logger.exception("Error in agent invocation: %s", agent_error)
+                self.record_audit(
+                    "agent.chat.failed", identity, thread_id, {"error": str(agent_error)}
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": "Agent invocation failed",
+                            "detail": str(agent_error),
+                            "thread_id": thread_id,
+                        }
+                    ),
+                    500,
                 )
 
-                # Get or initialize chat history for this thread
-                chat_history = self.chat_histories.get(thread_id, [])
-
-                # Prepare input for the agent
-                if hasattr(self.agent, "invoke"):
-                    # For LangGraph agents
-                    input_data = {"messages": chat_history + [("user", user_message)]}
-
-                    # Include any additional parameters from the request
-                    for key, value in data.items():
-                        if key != "message" and key != "history":
-                            input_data[key] = value
-
-                    try:
-                        # Invoke the agent
-                        response = self.agent.invoke(input_data, config=config)
-
-                        # Process agent response
-                        if isinstance(response, dict) and "messages" in response:
-                            # LangGraph agent response
-                            agent_messages = response["messages"]
-                            if agent_messages:
-                                last_message = agent_messages[-1]
-                                if (
-                                    isinstance(last_message, tuple)
-                                    and len(last_message) >= 2
-                                ):
-                                    agent_response = last_message[1]
-                                elif hasattr(last_message, "content"):
-                                    agent_response = last_message.content
-                                else:
-                                    agent_response = str(last_message)
-                            else:
-                                agent_response = "No response from agent"
-                        else:
-                            agent_response = str(response)
-                    except Exception as agent_error:
-                        logger.exception(
-                            f"Error in agent invocation: {str(agent_error)}"
-                        )
-                        agent_response = f"Error: {str(agent_error)}"
-
-                    # Update chat history
-                    chat_history.append(("user", user_message))
-                    chat_history.append(("assistant", agent_response))
-                    self.chat_histories[thread_id] = chat_history
-
-                    return jsonify(
-                        {
-                            "response": agent_response,
-                            "history": chat_history,
-                            "thread_id": thread_id,
-                        }
+            # ── output guardrail ─────────────────────────────────────────────
+            if self.governance_enabled:
+                decision = self.guardrails.check_output(agent_response, policy)
+                self.record_audit(
+                    "guardrail.output",
+                    identity,
+                    thread_id,
+                    {
+                        "allowed": decision.allowed,
+                        "reason": decision.reason,
+                        "stage": decision.stage,
+                    },
+                )
+                if not decision.allowed:
+                    return (
+                        jsonify(
+                            {
+                                "error": "Response blocked by output guardrail",
+                                "reason": decision.reason,
+                                "thread_id": thread_id,
+                            }
+                        ),
+                        403,
                     )
-                else:
-                    # Legacy agent format fallback
-                    logger.warning("Using legacy agent format")
-                    try:
-                        agent_response = str(self.agent(user_message))
-                    except Exception as legacy_error:
-                        logger.exception(
-                            f"Error in legacy agent invocation: {str(legacy_error)}"
-                        )
-                        agent_response = f"Error: {str(legacy_error)}"
+                agent_response = decision.transformed_text or agent_response
 
-                    # Update chat history
-                    chat_history.append(("user", user_message))
-                    chat_history.append(("assistant", agent_response))
-                    self.chat_histories[thread_id] = chat_history
-
-                    return jsonify(
-                        {
-                            "response": agent_response,
-                            "history": chat_history,
-                            "thread_id": thread_id,
-                        }
+            # ── persist history + respond ────────────────────────────────────
+            updated_history = chat_history + [
+                ("user", user_message),
+                ("assistant", agent_response),
+            ]
+            updated_history = self._store_history(thread_id, updated_history)
+            if self.state_provider:
+                try:
+                    self.state_provider.save_thread(
+                        thread_id,
+                        {"history": updated_history},
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
                     )
+                except Exception as state_error:  # pylint: disable=broad-except
+                    logger.warning("Failed to persist thread state: %s", state_error)
+            self.record_audit(
+                "agent.chat.completed",
+                identity,
+                thread_id,
+                {"history_length": len(updated_history)},
+            )
 
-            except Exception as e:
-                logger.exception(f"Error processing chat request: {str(e)}")
-                return jsonify({"error": f"Failed to process request: {str(e)}"}), 500
+            return jsonify(
+                {
+                    "response": agent_response,
+                    "history": updated_history,
+                    "thread_id": thread_id,
+                }
+            )
 
         @self.app.route("/reset", methods=["POST"])
         def reset():

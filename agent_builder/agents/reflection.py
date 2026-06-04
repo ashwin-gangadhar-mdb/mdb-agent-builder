@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
@@ -8,9 +7,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import create_react_agent
 from langgraph.prebuilt.chat_agent_executor import AgentState
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from agent_builder.utils.logger import logger
+from agent_builder.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # Custom agent state with iteration tracking
@@ -27,22 +28,20 @@ def create_basic_reflection_agent(
     reflection_prompt: str,
     tools: Optional[List[Any]] = None,
     checkpointer: Optional[Any] = None,
-    response_schema: Optional[BaseModel] = None,
     name: str = "basic_reflection_agent",
 ):
     """
     Create a basic reflection agent using a generate-reflect loop.
 
     Args:
-        llm: The language model to use
+        model: The language model to use
         generate_prompt: The prompt for the generation step
         reflection_prompt: The prompt for the reflection step
         tools: Optional list of tools to use
-        checkpointer: Optional checkpointer for saving state
-        response_schema: Optional schema for structuring responses
+        checkpointer: Optional checkpointer for saving state (defaults to an
+            in-memory saver created per agent)
         name: Name of the agent for logging purposes
     """
-    # logger = logging.getLogger(name)
     logger.info(f"Creating basic reflection agent: {name}")
 
     # validate all inputs and throw error if any are missing
@@ -56,6 +55,28 @@ def create_basic_reflection_agent(
         f"Agent {name}: Initializing with model, generate prompt, and reflection prompt"
     )
 
+    if checkpointer is None:
+        checkpointer = InMemorySaver()
+
+    # Build the generation sub-agent and the reflection chain ONCE, rather than
+    # reconstructing them on every iteration of the loop.  The generation agent
+    # is intentionally created without a checkpointer: it is an inner call made
+    # without a thread_id, and the outer graph's checkpointer handles
+    # persistence.
+    generate_input_prompt = ChatPromptTemplate(
+        [("system", generate_prompt), MessagesPlaceholder(variable_name="messages")]
+    )
+    generate_agent = create_react_agent(
+        model=model,
+        tools=tools or [],
+        prompt=generate_input_prompt,
+    )
+
+    reflection_input_prompt = ChatPromptTemplate(
+        [("system", reflection_prompt), MessagesPlaceholder(variable_name="messages")]
+    )
+    reflection_chain = reflection_input_prompt | model | StrOutputParser()
+
     # Define the generation function
     def generate(state: CustomAgentState, config: RunnableConfig) -> Dict[str, Any]:
         logger.info(f"Agent {name}: Generation step, iteration {state.get('itr', 0)}")
@@ -66,57 +87,42 @@ def create_basic_reflection_agent(
         iteration = state.get("itr", 0)
         messages = state.get("messages", [])
 
-        # Compose prompt for generation
-        generate_input_prompt = ChatPromptTemplate(
-            [("system", generate_prompt), MessagesPlaceholder(variable_name="messages")]
-        )
-
-        agent = create_react_agent(
-            model=model,
-            tools=tools,
-            prompt=generate_input_prompt,
-            checkpointer=checkpointer,
-        )
-
-        agent_response = agent.invoke(
+        agent_response = generate_agent.invoke(
             {"messages": messages + [("user", f"Input: {input_text}")]}
         )
 
         last_message = (
             agent_response["messages"][-1].content if agent_response["messages"] else ""
         )
+        # Append a single, well-typed transcript message; the ``add_messages``
+        # reducer accepts ("role", "content") tuples but not bare strings.
         return {
-            "messages": messages + [f"generate_{iteration}:\t{last_message}"],
+            "messages": [("assistant", f"generate_{iteration}:\t{last_message}")],
             "final_response": last_message,
             "itr": iteration + 1,
         }
 
     # Define the reflection function
     def reflect(state: CustomAgentState) -> Dict[str, Any]:
-        logger.info(f"Agent {name}: Reflection step, iteration {state.get('itr', 0)}")
-        messages = {"messages": state.get("messages", [])}
-        reflection_input_prompt = ChatPromptTemplate(
-            [
-                ("system", reflection_prompt),
-                MessagesPlaceholder(variable_name="messages"),
-            ]
+        iteration = state.get("itr", 0)
+        logger.info(f"Agent {name}: Reflection step, iteration {iteration}")
+        reflection_response = reflection_chain.invoke(
+            {"messages": state.get("messages", [])}
         )
-        reflection_chain = reflection_input_prompt | model | StrOutputParser()
-        reflection_response = reflection_chain.invoke(messages, temperature=0.0)
         return {
-            "messages": state.get("messages", [])
-            + [f"reflection_{state['itr']}:\treflection: {reflection_response}"]
+            "messages": [
+                ("assistant", f"reflection_{iteration}:\treflection: {reflection_response}")
+            ]
         }
 
     # Define the conditional edge function
     def should_continue(state: CustomAgentState) -> str:
-        logger.info(
-            f"Agent {name}: Checking if should continue --- Iteration: {state['itr']}"
-        )
+        iteration = state.get("itr", 0)
+        logger.info(f"Agent {name}: Checking if should continue --- Iteration: {iteration}")
         logger.info(
             f"Agent {name}: ---Generation Response: {state.get('final_response')} ---"
         )
-        if state.get("itr", 0) < state.get("max_iterations", 3):
+        if iteration < state.get("max_iterations", 3):
             return "continue"
         return "end"
 
@@ -132,9 +138,5 @@ def create_basic_reflection_agent(
     )
     builder.add_edge("reflect", "generate")
 
-    if checkpointer is None:
-        checkpointer = InMemorySaver()
-
     # Compile the graph
-    graph = builder.compile(checkpointer=checkpointer)
-    return graph
+    return builder.compile(checkpointer=checkpointer)

@@ -53,12 +53,44 @@ tools:
           - semantic_cache_response
   
 
+# Standalone state persistence for multi-worker (Gunicorn) deployments.
+# Workers share session history via MongoDB instead of process-local dicts.
+# Use this when you don't need the full governance stack.
+# This is independent of the governance section below — both can be active
+# simultaneously, but only one state_provider will be created (governance takes
+# precedence when governance.enabled is true).
+#
+# state:
+#   enabled: true
+#   connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+#   db_name: agent_state
+#   collection_name: agent_sessions
+
 # Configure checkpointing
 checkpointer:
   connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
   db_name: dr_reddy_agent_state
   collection_name: checkpoints
   name: rag_agent_checkpointer
+
+# Optional MongoDB-backed governance/control-plane configuration.
+# Set enabled: true to enforce policies, audit guardrail events, and persist sessions.
+governance:
+  enabled: false
+  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+  db_name: agent_control_plane
+  default_policy:
+    permissions:
+      - "*"
+  policy:
+    provider: mongodb
+    collection_name: agent_policies
+  audit:
+    enabled: true
+    collection_name: agent_audit_events
+  state:
+    enabled: true
+    collection_name: agent_sessions
 
 # Configure the agent
 agent:

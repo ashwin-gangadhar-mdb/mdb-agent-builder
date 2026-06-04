@@ -8,7 +8,6 @@ from typing import Any
 
 from pymongo import MongoClient
 
-from agent_builder.utils.logger import logger
 from agent_builder.utils.logging_config import get_logger
 
 # Set up module logger

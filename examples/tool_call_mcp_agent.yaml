@@ -1,0 +1,30 @@
+# Tool-call pattern: consume tools from an MCP server.
+llms:
+  - name: local_llm
+    provider: ollama
+    model_name: llama3.1
+    temperature: 0.1
+    additional_kwargs:
+      base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+
+tools:
+  - name: local_mcp_tools
+    tool_type: mcp
+    description: Tools exposed by a local MCP server.
+    servers_config:
+      local-tools:
+        transport: stdio
+        command: python
+        args:
+          - ./examples/mcp_servers/local_tools.py
+        filter:
+          - get_weather
+          - calculate
+
+agent:
+  name: tool_call_mcp_agent
+  agent_type: tool_call
+  llm: local_llm
+  tools:
+    - local_mcp_tools
+  system_prompt_path: ./examples/prompts/tool_call_system.txt

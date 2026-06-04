@@ -11,8 +11,6 @@ import time
 from logging.handlers import RotatingFileHandler
 from typing import Any, Callable, Dict, Optional, Union
 
-from agent_builder.utils.logger import logger
-
 # Default logging format
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
@@ -46,7 +44,7 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(
-    level: int = logging.INFO,
+    level: Union[int, str] = logging.INFO,
     format_str: str = DEFAULT_LOG_FORMAT,
     log_file: Optional[str] = None,
     max_bytes: int = 10485760,  # 10MB
@@ -58,7 +56,8 @@ def configure_logging(
     Configure logging for the entire application.
 
     Args:
-        level: Logging level (default: INFO)
+        level: Logging level, either an ``int`` (e.g. ``logging.INFO``) or a
+            case-insensitive level name (e.g. ``"INFO"``).
         format_str: Log format string
         log_file: Optional path to log file
         max_bytes: Maximum size of log file before rotation
@@ -66,8 +65,11 @@ def configure_logging(
         module_log_levels: Dictionary mapping module names to specific log levels
         json_output: Whether to output logs in JSON format
     """
-    # Convert string log level to logging constant
-    numeric_level = getattr(logging, level, None)
+    # Accept either a numeric level or a string level name.
+    if isinstance(level, str):
+        numeric_level = getattr(logging, level.upper(), None)
+    else:
+        numeric_level = level
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {level}")
 
@@ -105,8 +107,8 @@ def configure_logging(
 
     # Set specific log levels for modules if provided
     if module_log_levels:
-        for module, level in module_log_levels.items():
-            module_level = getattr(logging, level.upper(), None)
+        for module, mod_level in module_log_levels.items():
+            module_level = getattr(logging, mod_level.upper(), None)
             if isinstance(module_level, int):
                 logging.getLogger(module).setLevel(module_level)
 

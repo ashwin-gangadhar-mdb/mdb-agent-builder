@@ -1,0 +1,17 @@
+# Reflection pattern: generate, critique, and improve answers.
+llms:
+  - name: local_llm
+    provider: ollama
+    model_name: llama3.1
+    temperature: 0.3
+    additional_kwargs:
+      base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+
+agent:
+  name: reflection_quality_reviewer
+  agent_type: reflect
+  llm: local_llm
+  system_prompt_path: ./examples/prompts/reflection_generate.txt
+  reflection_prompt_path: ./examples/prompts/reflection_critique.txt
+  additional_kwargs:
+    max_iterations: 3

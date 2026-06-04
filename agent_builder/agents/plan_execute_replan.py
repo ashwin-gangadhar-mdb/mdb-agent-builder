@@ -1,5 +1,11 @@
+"""Plan-Execute-Replan agent.
+
+Generates a step-by-step plan, executes the next step with a ReAct sub-agent,
+then replans based on what has been done so far until a final response is ready.
+"""
+
 import operator
-from typing import Annotated, Any, List, Literal, Optional, Tuple, Union
+from typing import Annotated, Any, List, Literal, Optional, Tuple, Type, Union
 
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.checkpoint.memory import InMemorySaver
@@ -8,7 +14,9 @@ from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
-from agent_builder.utils.logger import logger
+from agent_builder.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class PlanExecute(TypedDict):
@@ -72,7 +80,7 @@ replanner_prompt = ChatPromptTemplate.from_template(
 )
 
 
-def get_llm_with_structured_output(llm, prompt, schema: BaseModel):
+def get_llm_with_structured_output(llm, prompt, schema: Type[BaseModel]):
     chain = prompt | llm.with_structured_output(schema)
     return chain
 
@@ -81,7 +89,7 @@ def create_plan_execute_replan_agent(
     model,
     execute_prompt: str,
     tools: Optional[List[Any]] = None,
-    checkpointer: Optional[Any] = InMemorySaver(),
+    checkpointer: Optional[Any] = None,
     name: str = "plan_execute_replan_agent",
 ):
     """
@@ -91,14 +99,13 @@ def create_plan_execute_replan_agent(
         model: The language model to use for generating plans and executing steps.
         execute_prompt: The prompt template for executing steps.
         tools: Optional list of tools the agent can use.
-        checkpointer: Optional checkpointer for saving state.
+        checkpointer: Optional checkpointer for saving state. Defaults to an
+            in-memory saver created per agent (never shared between agents).
         name: Name of the agent for logging purposes.
 
     Returns:
         A StateGraph that represents the agent's workflow.
     """
-
-    # logger = logging.getLogger(name)
     logger.info(f"Creating Plan-Execute-Replan agent: {name}")
 
     # validate all inputs and throw error if any are missing
@@ -107,6 +114,11 @@ def create_plan_execute_replan_agent(
     if not execute_prompt:
         raise ValueError("Execute prompt is required.")
     logger.info(f"Agent {name}: Initializing with model and execute prompt")
+
+    # Create a fresh checkpointer per agent so state is never shared between
+    # independently created agents (a shared default instance would leak state).
+    if checkpointer is None:
+        checkpointer = InMemorySaver()
 
     if tools is None:
         tools = []
@@ -190,7 +202,7 @@ def create_plan_execute_replan_agent(
         """Determine if the agent workflow should end or continue."""
         if "response" in state and state["response"]:
             logger.info(f"Agent {name}: Execution complete, returning response")
-            return END
+            return "end"
         logger.debug(f"Agent {name}: Continuing execution")
         return "continue"
 

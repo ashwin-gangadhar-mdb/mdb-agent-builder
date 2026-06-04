@@ -4,6 +4,11 @@ Tool loader for MDB Agent Builder.
 This module provides functionality to load different types of tools
 including MongoDB tools, MCP tools, and other LangChain tools.
 It handles tool configuration, validation, and instantiation.
+
+The loader now delegates all tool-type-specific construction to the adapter
+classes defined in ``agent_builder.tools.adapters``, following the adapter
+design pattern.  The ``load_tool`` / ``load_tools`` public API is preserved for
+backward compatibility.
 """
 
 import traceback
@@ -14,8 +19,6 @@ from typing import Any, Dict, List, Optional
 from langchain_core.language_models import BaseLLM
 from langchain_core.tools import BaseTool
 
-from agent_builder.tools.mcp import get_mcp_tools
-from agent_builder.tools.mongodb import MongoDBTools
 from agent_builder.utils.logging_config import get_logger
 
 # Set up module logger
@@ -72,95 +75,29 @@ def load_tool(config: ToolConfig) -> BaseTool:
     """
     Load a tool based on the provided configuration.
 
+    Delegates to ``ToolAdapterFactory.create(config).get_tools()`` so that
+    tool-type-specific construction logic lives in the corresponding adapter
+    class rather than in a monolithic conditional block here.
+
     Args:
         config: ToolConfig containing tool type and other parameters
 
     Returns:
-        An initialized LangChain tool instance
+        An initialized LangChain tool instance (or list for toolkits)
 
     Raises:
         ValueError: If the tool type is not supported or required configuration is missing
     """
+    # Import here to avoid circular dependency at module load time
+    from agent_builder.tools.adapters import ToolAdapterFactory
+
     tool_type = config.tool_type.lower()
-    tool_name = config.name or f"{tool_type}_tool"
-    logger.info("Loading tool of type: %s, name: %s", tool_type, tool_name)
-
-    if tool_type == ToolType.VECTOR_SEARCH:
-        _check_required_fields(
-            config, ["connection_str", "namespace", "embedding_model"], tool_type
-        )
-
-        # Create MongoDB tools instance
-        mongodb_tools = MongoDBTools(
-            name=tool_name,
-            connection_str=config.connection_str,
-            namespace=config.namespace,
-            embedding_model=config.embedding_model,
-            **config.additional_kwargs,
-        )
-
-        # Get vector retriever tool
-        return mongodb_tools.get_vector_retriever_tool()
-
-    elif tool_type == ToolType.MONGODB_TOOLKIT:
-        _check_required_fields(
-            config, ["connection_str", "namespace", "llm"], tool_type
-        )
-
-        # Create MongoDB tools instance
-        mongodb_tools = MongoDBTools(
-            name=tool_name,
-            connection_str=config.connection_str,
-            namespace=config.namespace,
-            embedding_model=None,  # Not needed for MongoDB toolkit
-            **config.additional_kwargs,
-        )
-
-        # Get MongoDB toolkit tools
-        return mongodb_tools.get_mdb_toolkit(config.llm)
-
-    elif tool_type == ToolType.NL_TO_MQL:
-        _check_required_fields(
-            config, ["connection_str", "namespace", "llm"], tool_type
-        )
-
-        # Create MongoDB tools instance
-        mongodb_tools = MongoDBTools(
-            name=tool_name,
-            connection_str=config.connection_str,
-            namespace=config.namespace,
-            embedding_model=None,  # Not needed for NL to MQL
-            **config.additional_kwargs,
-        )
-
-        # Get NL to MQL tool
-        return mongodb_tools.get_nl_to_mql_tool(config.llm)
-
-    elif tool_type == ToolType.MCP:
-        _check_required_fields(config, ["servers_config"], tool_type)
-
-        # Get MCP tools
-        server_name = config.name
-        return get_mcp_tools(config.servers_config, server_name)
-
-    elif tool_type == ToolType.FULL_TEXT_SEARCH:
-        _check_required_fields(config, ["connection_str", "namespace"], tool_type)
-
-        # Create MongoDB tools instance
-        mongodb_tools = MongoDBTools(
-            name=tool_name,
-            connection_str=config.connection_str,
-            namespace=config.namespace,
-            embedding_model=None,  # Not needed for full text search
-            **config.additional_kwargs,
-        )
-
-        # Get full text search tool
-        return mongodb_tools.get_full_text_search_tool()
-
-    else:
-        logger.error("Unsupported tool type: %s", tool_type)
-        raise ValueError(f"Unsupported tool type: {tool_type}")
+    logger.info("Loading tool of type: %s, name: %s", tool_type, config.name)
+    adapter = ToolAdapterFactory.create(config)
+    tools = adapter.get_tools()
+    # Preserve backward compatibility: return a list only for toolkits,
+    # single tool otherwise.
+    return tools if len(tools) != 1 else tools[0]
 
 
 def _check_required_fields(config: ToolConfig, fields: List[str], tool_type: str):

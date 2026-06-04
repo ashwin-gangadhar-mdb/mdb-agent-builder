@@ -1,43 +1,28 @@
 import os
 import re
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Type, Union
 
 import yaml
-from pipe21 import Map, Pipe
 from pydantic import BaseModel, create_model
-
-from agent_builder.agents.loader import AgentConfig, load_agent
-from agent_builder.embeddings.loader import (
-    EmbeddingConfig,
-    load_embedding_model,
-    load_embedding_models,
-)
-from agent_builder.llms.loader import LLMConfig, load_llm, load_llms
-from agent_builder.tools.loader import ToolConfig, load_tools
-from agent_builder.utils.logger import logger
 from agent_builder.utils.logging_config import get_logger
 
 # Set up module logger
 logger = get_logger(__name__)
 
 
-def parse_response_model(response_dict: dict) -> BaseModel:
+def parse_response_model(response_dict: dict) -> Type[BaseModel]:
     """
-    Parses a dictionary into a Pydantic model.
+    Builds a Pydantic model class from a field specification dictionary.
 
     Args:
-        response_dict (dict): The dictionary to parse.
+        response_dict (dict): Mapping of field name to a ``(type, default)`` pair.
 
     Returns:
-        BaseModel: A Pydantic model instance.
+        Type[BaseModel]: A dynamically created Pydantic model class.
     """
-    response_dict = (
-        list(response_dict.items())
-        | Map(lambda item: (item[0], tuple(item[1])))
-        | Pipe(dict)
-    )
-    return create_model("ResponseModel", **response_dict)
+    fields = {key: tuple(value) for key, value in response_dict.items()}
+    return create_model("ResponseModel", **fields)
 
 
 def resolve_env_variables(data):
@@ -71,6 +56,39 @@ def resolve_env_variables(data):
 
         return pattern.sub(replace_match, data)
     return data
+
+
+def _resolve_ref(value, registry: dict, kind: str, owner: str):
+    """Resolve a string *value* against a ``name -> object`` *registry*.
+
+    Args:
+        value:    The reference (a name) to resolve. Non-strings pass through.
+        registry: Mapping of names to already-built component instances.
+        kind:     Human-readable component kind for error messages.
+        owner:    Human-readable description of what holds the reference.
+
+    Raises:
+        ValueError: if *value* is a name that is not present in *registry*.
+    """
+    if not isinstance(value, str):
+        return value
+    if value not in registry:
+        msg = f"{owner} references {kind} '{value}' which was not found."
+        logger.error(msg)
+        raise ValueError(msg)
+    return registry[value]
+
+
+def _resolve_component_refs(item: dict, result: dict, owner: str) -> None:
+    """Resolve the ``embedding_model`` and ``llm`` references of *item* in-place."""
+    for field, registry_key, kind in (
+        ("embedding_model", "embeddings", "embedding model"),
+        ("llm", "llms", "LLM"),
+    ):
+        if field in item:
+            item[field] = _resolve_ref(
+                item[field], result.get(registry_key, {}), kind, owner
+            )
 
 
 def load_yaml(file_path) -> dict:
@@ -114,6 +132,30 @@ def load_application(config_path: str):
     """
     Load application components from a YAML configuration file.
 
+    The ``memory:`` section (a list of memory adapter configurations) is now
+    fully wired into the agent.  Each entry is built into a concrete
+    ``BaseMemoryAdapter`` by ``MemoryAdapterFactory`` and then injected into
+    ``AgentConfig.episodic_memory`` / ``AgentConfig.observational_memory``
+    before the agent is created.
+
+    Example ``memory:`` YAML section::
+
+        memory:
+          - name: recall
+            memory_type: episodic
+            connection_str: ${MONGODB_URI}
+            namespace: mydb.episodic_memories
+            embedding_model: my_embedding   # references embeddings section
+            index_name: episodic_index
+
+          - name: observations
+            memory_type: observational
+            connection_str: ${MONGODB_URI}
+            namespace: mydb.observational_memories
+            embedding_model: my_embedding
+            llm: my_llm                     # references llms section
+            index_name: observational_index
+
     Args:
         config_path: Path to the YAML configuration file
 
@@ -121,6 +163,11 @@ def load_application(config_path: str):
         A dictionary containing the loaded application components
     """
     config = load_yaml(config_path)
+    from agent_builder.agents.loader import AgentConfig, load_agent
+    from agent_builder.embeddings.loader import EmbeddingConfig, load_embedding_models
+    from agent_builder.llms.loader import LLMConfig, load_llms
+    from agent_builder.memory.adapters import MemoryAdapterFactory, MemoryConfig
+    from agent_builder.tools.loader import ToolConfig, load_tools
 
     result = {}
 
@@ -136,28 +183,36 @@ def load_application(config_path: str):
         llm_configs = [LLMConfig(**llm) for llm in config["llms"]]
         result["llms"] = load_llms(llm_configs)
 
+    # Load memory adapters (must come after embeddings + LLMs so refs resolve)
+    if "memory" in config:
+        logger.info("Loading memory adapters")
+        memory_configs_raw = deepcopy(config["memory"])
+        # Normalise: allow a single dict or a list of dicts
+        if isinstance(memory_configs_raw, dict):
+            memory_configs_raw = [memory_configs_raw]
+
+        memory_adapters = {}
+        for mem_raw in memory_configs_raw:
+            _resolve_component_refs(
+                mem_raw, result, f"Memory adapter '{mem_raw.get('name')}'"
+            )
+            mem_cfg = MemoryConfig(**mem_raw)
+            adapter = MemoryAdapterFactory.create(mem_cfg)
+            memory_adapters[mem_cfg.name] = adapter
+            logger.info(
+                "Loaded memory adapter '%s' (type=%s)", mem_cfg.name, mem_cfg.memory_type
+            )
+
+        result["memory_adapters"] = memory_adapters
+
     # Load tools with resolved references
     if "tools" in config:
         logger.info("Loading tools")
         tools_config = deepcopy(config["tools"])
 
-        # Resolve embedding model references
+        # Resolve embedding model / LLM references on each tool
         for tool in tools_config:
-            if "embedding_model" in tool and isinstance(tool["embedding_model"], str):
-                if tool["embedding_model"] not in result.get("embeddings", {}):
-                    logger.error(
-                        f"Referenced embedding model '{tool['embedding_model']}' not found"
-                    )
-                    raise ValueError(
-                        f"Referenced embedding model '{tool['embedding_model']}' not found"
-                    )
-                tool["embedding_model"] = result["embeddings"][tool["embedding_model"]]
-
-            if "llm" in tool and isinstance(tool["llm"], str):
-                if tool["llm"] not in result.get("llms", {}):
-                    logger.error(f"Referenced LLM '{tool['llm']}' not found")
-                    raise ValueError(f"Referenced LLM '{tool['llm']}' not found")
-                tool["llm"] = result["llms"][tool["llm"]]
+            _resolve_component_refs(tool, result, f"Tool '{tool.get('name')}'")
 
         tool_configs = [ToolConfig(**tool) for tool in tools_config]
         result["tools"] = load_tools(tool_configs)
@@ -168,28 +223,106 @@ def load_application(config_path: str):
         agent_config = deepcopy(config["agent"])
 
         # Resolve LLM reference
-        if "llm" in agent_config and isinstance(agent_config["llm"], str):
-            if agent_config["llm"] not in result.get("llms", {}):
-                logger.error(f"Referenced LLM '{agent_config['llm']}' not found")
-                raise ValueError(f"Referenced LLM '{agent_config['llm']}' not found")
-            agent_config["llm"] = result["llms"][agent_config["llm"]]
+        if "llm" in agent_config:
+            agent_config["llm"] = _resolve_ref(
+                agent_config["llm"], result.get("llms", {}), "LLM", "Agent"
+            )
 
         # Resolve tool references
         if "tools" in agent_config and isinstance(agent_config["tools"], list):
-            resolved_tools = []
-            for tool_name in agent_config["tools"]:
-                if tool_name not in result.get("tools", {}):
-                    logger.error(f"Referenced tool '{tool_name}' not found")
-                    raise ValueError(f"Referenced tool '{tool_name}' not found")
-                resolved_tools.append(result["tools"][tool_name])
-            agent_config["tools"] = resolved_tools
+            agent_config["tools"] = [
+                _resolve_ref(tool_name, result.get("tools", {}), "tool", "Agent")
+                for tool_name in agent_config["tools"]
+            ]
 
         if "checkpointer" in config:
             agent_config["checkpointer_config"] = config["checkpointer"]
+
+        # Inject memory adapters into the agent config.
+        # Convention:
+        #   • The first adapter whose memory_type == "episodic" becomes
+        #     agent_config["episodic_memory"].
+        #   • The first adapter whose memory_type == "observational" becomes
+        #     agent_config["observational_memory"].
+        # Explicit references can also be specified as:
+        #   agent:
+        #     episodic_memory: recall       # name of a memory adapter
+        #     observational_memory: observations
+        memory_adapters = result.get("memory_adapters", {})
+        if memory_adapters:
+            _wire_memory_adapters(agent_config, memory_adapters, config)
 
         # Load the agent
         agent_config_obj = AgentConfig(**agent_config)
         result["agent"] = load_agent(agent_config_obj)
 
+    # Keep control-plane configuration available to the serving layer.
+    for config_key in ["governance", "state"]:
+        if config_key in config:
+            result[f"{config_key}_config"] = config[config_key]
+    # Keep raw memory config for introspection (adapters already instantiated above)
+    if "memory" in config:
+        result["memory_config"] = config["memory"]
+
     logger.info("Application components loaded successfully")
     return result
+
+
+def _wire_memory_adapters(
+    agent_config: dict,
+    memory_adapters: dict,
+    full_config: dict,
+) -> None:
+    """
+    Resolve memory adapter references in *agent_config* in-place.
+
+    If the agent YAML explicitly names adapters::
+
+        agent:
+          episodic_memory: recall
+          observational_memory: observations
+
+    those names are looked up in *memory_adapters*.  Otherwise, the first
+    adapter of each type is auto-assigned.
+    """
+    from agent_builder.core.interfaces import (
+        BaseEpisodicMemoryAdapter,
+        BaseObservationalMemoryAdapter,
+    )
+
+    # Resolve explicit name references
+    for field_name, adapter_class in [
+        ("episodic_memory", BaseEpisodicMemoryAdapter),
+        ("observational_memory", BaseObservationalMemoryAdapter),
+    ]:
+        if field_name in agent_config and isinstance(agent_config[field_name], str):
+            ref = agent_config[field_name]
+            if ref not in memory_adapters:
+                raise ValueError(
+                    f"Agent references memory adapter '{ref}' under '{field_name}' "
+                    f"but no adapter with that name was found. "
+                    f"Available adapters: {list(memory_adapters)}"
+                )
+            agent_config[field_name] = memory_adapters[ref]
+            logger.info("Wired %s → adapter '%s'", field_name, ref)
+
+    # Auto-assign by type if not already set
+    if "episodic_memory" not in agent_config:
+        for adapter in memory_adapters.values():
+            if isinstance(adapter, BaseEpisodicMemoryAdapter):
+                agent_config["episodic_memory"] = adapter
+                logger.info(
+                    "Auto-wired episodic_memory → adapter '%s'",
+                    adapter.__class__.__name__,
+                )
+                break
+
+    if "observational_memory" not in agent_config:
+        for adapter in memory_adapters.values():
+            if isinstance(adapter, BaseObservationalMemoryAdapter):
+                agent_config["observational_memory"] = adapter
+                logger.info(
+                    "Auto-wired observational_memory → adapter '%s'",
+                    adapter.__class__.__name__,
+                )
+                break

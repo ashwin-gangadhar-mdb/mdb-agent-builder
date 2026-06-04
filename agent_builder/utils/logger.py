@@ -1,56 +1,35 @@
 """
-Logger module for MAAP Agent Builder.
+Backward-compatibility shim for the legacy ``AgentLogger`` API.
 
-This module provides a centralized logging system for the MAAP Agent Builder,
-supporting both console and file logging with appropriate formatting.
+The project now has a single logging entry point in
+:mod:`agent_builder.utils.logging_config`.  This module is kept only so that
+older imports (``from agent_builder.utils.logger import logger`` /
+``AgentLogger``) keep working; everything delegates to ``get_logger`` so there
+is exactly one set of handlers per logger name and no duplicate file handlers.
+
+Prefer importing :func:`agent_builder.utils.logging_config.get_logger`
+directly in new code.
 """
 
-import logging
-import sys
-from pathlib import Path
+from agent_builder.utils.logging_config import get_logger
 
 
 class AgentLogger:
-    """Centralized logging for MAAP Agent Builder."""
+    """Thin wrapper kept for backward compatibility.
+
+    Historically this class attached its own console + file handlers (and even
+    printed on construction).  That caused duplicate log lines and leaked file
+    handles when instantiated repeatedly.  It now simply delegates to the
+    centralised :func:`get_logger`.
+    """
 
     def __init__(self, name: str = "maap-agent-builder", level: str = "INFO"):
-        self.logger = logging.getLogger(name)
-        self.logger.setLevel(getattr(logging, level.upper()))
-
-        if not self.logger.handlers:
-            self._setup_handlers()
-
-    def _setup_handlers(self):
-        """Setup logging handlers."""
-        # Console handler with colors
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        console_handler.setFormatter(console_formatter)
-        self.logger.addHandler(console_handler)
-
-        # File handler
-        try:
-            log_dir = Path("logs")
-            log_dir.mkdir(exist_ok=True)
-
-            file_handler = logging.FileHandler(log_dir / "agent_builder.log")
-            file_formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
-            )
-            file_handler.setFormatter(file_formatter)
-            self.logger.addHandler(file_handler)
-
-            print(f"📝 Logging to {log_dir / 'agent_builder.log'}")
-
-        except (IOError, PermissionError) as e:
-            self.logger.warning("Could not create file handler: %s", e)
+        self._logger = get_logger(name)
 
     def get_logger(self):
-        """Get the logger instance."""
-        return self.logger
+        """Return the underlying centrally-configured logger."""
+        return self._logger
 
 
-# Global logger instance
-logger = AgentLogger().get_logger()
+# Module-level logger preserved for ``from ... import logger`` call sites.
+logger = get_logger("maap-agent-builder")
