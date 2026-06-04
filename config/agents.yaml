@@ -18,6 +18,20 @@ llms:
     temperature: 0.7
     max_tokens: 4096
 
+  # Grove API gateway (OpenAI-compatible). Routes through a single gateway
+  # endpoint that can front multiple upstream providers. Set GROVE_API_BASE
+  # and GROVE_API_KEY in the environment, or pass base_url/api_key inline.
+  # - name: grove-claude
+  #   provider: grove
+  #   model_name: claude-3-5-sonnet        # model id as exposed by Grove
+  #   temperature: 0.7
+  #   max_tokens: 4096
+  #   additional_kwargs:
+  #     base_url: ${GROVE_API_BASE}        # e.g. https://grove.example.com/v1
+  #     api_key: ${GROVE_API_KEY}
+  #     default_headers:                   # optional extra gateway headers
+  #       x-tenant-id: acme
+
 
 # Configure agent tools
 tools:

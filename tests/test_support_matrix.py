@@ -81,6 +81,7 @@ class SupportMatrixTests(unittest.TestCase):
                 "azure",
                 "ollama",
                 "sagemaker",
+                "grove",
             ]
             if f'"{key}":' in source
         }
@@ -95,6 +96,7 @@ class SupportMatrixTests(unittest.TestCase):
                 "azure",
                 "ollama",
                 "sagemaker",
+                "grove",
             },
         )
 

@@ -210,6 +210,87 @@ class SageMakerLLMAdapter(BaseLLMAdapter):
         )
 
 
+class GroveLLMAdapter(BaseLLMAdapter):
+    """Adapter for the Grove API gateway.
+
+    Grove is an LLM API gateway that exposes an OpenAI-compatible
+    chat-completions endpoint while routing requests to one or more upstream
+    model providers behind the scenes.  This adapter points LangChain's
+    ``ChatOpenAI`` client at the gateway's base URL so the rest of the
+    framework can use any model Grove exposes without provider-specific code.
+
+    Configuration (YAML)::
+
+        llms:
+          - name: grove-claude
+            provider: grove
+            model_name: claude-3-5-sonnet      # model id as exposed by Grove
+            temperature: 0.7
+            max_tokens: 2048
+            additional_kwargs:
+              base_url: ${GROVE_API_BASE:-https://grove.example.com/v1}
+              api_key: ${GROVE_API_KEY}
+              default_headers:                 # optional extra gateway headers
+                x-tenant-id: acme
+
+    Resolution order:
+      * **base_url** — ``additional_kwargs.base_url`` →
+        ``additional_kwargs.openai_api_base`` → ``GROVE_API_BASE`` env →
+        ``GROVE_API_GATEWAY_URL`` env.  Required.
+      * **api_key**  — ``additional_kwargs.api_key`` → ``GROVE_API_KEY`` env →
+        a placeholder (gateways that don't require a key still need a value).
+
+    Any remaining keys in ``additional_kwargs`` (e.g. ``default_headers``,
+    ``organization``, ``timeout``) are passed straight through to
+    ``ChatOpenAI``.
+    """
+
+    # Gateways that don't enforce auth still require a non-empty key value for
+    # the OpenAI client to initialise.
+    _PLACEHOLDER_API_KEY = "grove-no-auth"
+
+    def __init__(self, config: LLMConfig) -> None:
+        self._config = config
+
+    def get_llm(self) -> BaseLLM:
+        from langchain_openai import ChatOpenAI
+
+        # Copy so we can pop gateway-specific keys without mutating the config.
+        additional = dict(self._config.additional_kwargs or {})
+
+        base_url = (
+            additional.pop("base_url", None)
+            or additional.pop("openai_api_base", None)
+            or os.environ.get("GROVE_API_BASE")
+            or os.environ.get("GROVE_API_GATEWAY_URL")
+        )
+        if not base_url:
+            raise ValueError(
+                "Grove gateway base URL is required. Set GROVE_API_BASE (or "
+                "GROVE_API_GATEWAY_URL), or pass base_url in additional_kwargs."
+            )
+
+        api_key = (
+            additional.pop("api_key", None)
+            or os.environ.get("GROVE_API_KEY")
+            or self._PLACEHOLDER_API_KEY
+        )
+
+        kwargs = _base_kwargs(self._config)
+        kwargs["base_url"] = base_url
+        kwargs["api_key"] = api_key
+        # Remaining additional_kwargs (default_headers, organization, …) pass
+        # through to the OpenAI-compatible client.
+        kwargs.update(additional)
+
+        logger.debug(
+            "Initialising Grove gateway LLM with model: %s, base_url: %s",
+            self._config.model_name,
+            base_url,
+        )
+        return ChatOpenAI(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -223,6 +304,7 @@ _ADAPTER_REGISTRY: Dict[str, type] = {
     "azure": AzureLLMAdapter,
     "ollama": OllamaLLMAdapter,
     "sagemaker": SageMakerLLMAdapter,
+    "grove": GroveLLMAdapter,
 }
 
 

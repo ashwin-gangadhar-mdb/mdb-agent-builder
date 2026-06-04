@@ -54,6 +54,7 @@ class ExampleConfigTests(unittest.TestCase):
             "plan_execute_replan_research.yaml",
             "long_term_memory_assistant.yaml",
             "governed_enterprise_support.yaml",
+            "multi_agent_customer_support.yaml",
         }
 
         self.assertEqual({path.name for path in EXAMPLES.glob("*.yaml")}, expected)
@@ -62,13 +63,27 @@ class ExampleConfigTests(unittest.TestCase):
         for path in sorted(EXAMPLES.glob("*.yaml")):
             with self.subTest(example=path.name):
                 config = load_yaml(str(path))
-                self.assertIn("agent", config)
-                self._assert_agent_is_valid(config)
+                # Examples use either the singular 'agent:' key or the
+                # plural 'agents:' key (multi-agent mode). Both are valid.
+                self.assertTrue(
+                    "agent" in config or "agents" in config,
+                    "example must define 'agent' or 'agents'",
+                )
                 self._assert_llms_are_valid(config)
                 self._assert_embeddings_are_valid(config)
                 self._assert_tools_are_valid(config)
-                self._assert_agent_references_are_valid(config)
-                self._assert_prompt_paths_exist(config)
+                for agent in self._iter_agents(config):
+                    self._assert_agent_is_valid(agent)
+                    self._assert_agent_references_are_valid(config, agent)
+                    self._assert_prompt_paths_exist(agent)
+
+    @staticmethod
+    def _iter_agents(config):
+        """Yield every agent dict, whether single- or multi-agent."""
+        if "agent" in config:
+            yield config["agent"]
+        for agent in config.get("agents", []) or []:
+            yield agent
 
     def test_governed_example_enables_control_plane(self):
         config = load_yaml(str(EXAMPLES / "governed_enterprise_support.yaml"))
@@ -119,8 +134,7 @@ class ExampleConfigTests(unittest.TestCase):
             self.assertIn("connection_str", agent)
             self.assertIn("namespace", agent)
 
-    def _assert_agent_is_valid(self, config):
-        agent = config["agent"]
+    def _assert_agent_is_valid(self, agent):
         self.assertIn(agent["agent_type"], SUPPORTED_AGENT_TYPES)
         self.assertIn("name", agent)
         self.assertIn("llm", agent)
@@ -149,17 +163,26 @@ class ExampleConfigTests(unittest.TestCase):
             if tool["tool_type"] == "mcp":
                 self.assertIn("servers_config", tool)
 
-    def _assert_agent_references_are_valid(self, config):
+    def _assert_agent_references_are_valid(self, config, agent):
         llms = {llm["name"] for llm in config.get("llms", [])}
         tools = {tool["name"] for tool in config.get("tools", [])}
-        agent = config["agent"]
 
         self.assertIn(agent["llm"], llms)
         for tool_name in agent.get("tools", []):
             self.assertIn(tool_name, tools)
 
-    def _assert_prompt_paths_exist(self, config):
-        agent = config["agent"]
+        # Multi-agent handoffs must reference agents declared in the same file.
+        if "agents" in config:
+            agent_names = {a["name"] for a in config["agents"]}
+            for handoff in agent.get("handoffs", []) or []:
+                target = handoff["name"] if isinstance(handoff, dict) else handoff
+                self.assertIn(
+                    target,
+                    agent_names,
+                    f"handoff references unknown agent '{target}'",
+                )
+
+    def _assert_prompt_paths_exist(self, agent):
         for key in ["system_prompt_path", "reflection_prompt_path"]:
             if key in agent:
                 prompt_path = ROOT / agent[key]

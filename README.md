@@ -127,12 +127,70 @@ OPENAI_API_KEY=sk-...
 BEDROCK_REGION=us-west-2
 FIREWORKS_API_KEY=...
 
+# Grove API gateway (OpenAI-compatible LLM gateway)
+GROVE_API_BASE=https://grove.example.com/v1
+GROVE_API_KEY=...
+
 # Server settings (for multi-worker deployments)
 GUNICORN_WORKERS=4
 GUNICORN_TIMEOUT=120
 PORT=5000
 LOG_LEVEL=INFO
 ```
+
+### LLM Providers
+
+Models are declared under `llms:` and referenced by name from agents. Each
+provider has its own adapter; the supported `provider:` values are:
+
+| Provider | Notes |
+|----------|-------|
+| `bedrock` | Amazon Bedrock chat models |
+| `anthropic` | Anthropic Claude (`ANTHROPIC_API_KEY`) |
+| `fireworks` | Fireworks AI (`FIREWORKS_API_KEY`) |
+| `together` | Together AI (`TOGETHER_API_KEY`) |
+| `cohere` | Cohere (`COHERE_API_KEY`) |
+| `azure` | Azure OpenAI (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`) |
+| `ollama` | Local Ollama models |
+| `sagemaker` | AWS SageMaker endpoints |
+| `grove` | **Grove API gateway** (OpenAI-compatible) — see below |
+
+#### Grove API Gateway
+
+Grove is an OpenAI-compatible LLM gateway: a single endpoint that fronts one
+or more upstream model providers. Point the `grove` provider at the gateway's
+base URL and the framework can use any model Grove exposes:
+
+```yaml
+llms:
+  - name: grove-claude
+    provider: grove
+    model_name: claude-3-5-sonnet        # model id as exposed by Grove
+    temperature: 0.7
+    max_tokens: 2048
+    additional_kwargs:
+      base_url: ${GROVE_API_BASE}        # e.g. https://grove.example.com/v1
+      api_key: ${GROVE_API_KEY}
+      default_headers:                   # optional extra gateway headers
+        x-tenant-id: acme
+
+agent:
+  agent_type: react
+  llm: grove-claude
+  tools: [search]
+```
+
+Resolution order:
+
+- **base_url** — `additional_kwargs.base_url` → `GROVE_API_BASE` env →
+  `GROVE_API_GATEWAY_URL` env. Required.
+- **api_key** — `additional_kwargs.api_key` → `GROVE_API_KEY` env → a
+  placeholder (for gateways that don't enforce auth).
+
+Any other keys under `additional_kwargs` (e.g. `default_headers`,
+`organization`, `timeout`) are passed straight through to the underlying
+OpenAI-compatible client, so gateway-specific auth headers and options are
+fully supported.
 
 ## Agent Types
 
