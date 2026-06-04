@@ -1,676 +1,473 @@
 # MAAP Agent Builder
 
-A flexible framework for building and deploying LLM agents with various capabilities using LangChain and LangGraph.
+A production-ready framework for building and deploying LLM agents with multiple agent types, multi-agent coordination, advanced memory systems, and governance controls. Built on LangChain, LangGraph, and MongoDB.
 
 ## Overview
 
-MAAP Agent Builder is a modular framework that allows you to configure and deploy different types of agents with various capabilities:
+MAAP Agent Builder enables you to:
 
-- **Multiple Agent Types**: Support for React, Tool-Call, Reflection, Plan-Execute-Replan, and Long-Term Memory agents
-- **Diverse LLM Providers**: Integration with Anthropic, Bedrock, Fireworks, Together AI, Cohere, Azure, Ollama, and more
-- **Embedding Model Support**: Bedrock, SageMaker, VertexAI, Azure, Together, Fireworks, Cohere, VoyageAI, Ollama, and HuggingFace
-- **Tool Integration**: Easy-to-configure tools for extending agent capabilities
-- **Thread-Based Conversations**: Support for multiple concurrent threads with independent conversation histories
-- **Stateful Sessions**: Conversation history and checkpointing mechanisms
-- **Web API**: Built-in Flask server for easy deployment and interaction
+- **Build diverse agent types** — ReAct, Tool-Call, Reflection, Plan-Execute-Replan, and Long-Term Memory agents, all via YAML
+- **Coordinate multiple agents** — configure handoffs between agents so they can route to each other based on conversation context
+- **Scale across workers** — Gunicorn multi-worker support with MongoDB-backed conversation state and checkpointing
+- **Add long-term memory** — episodic (verbatim) and observational (distilled) memory with MongoDB Atlas Vector Search
+- **Enforce governance** — access policies, prompt injection detection, PII redaction, and audit logging
+- **Integrate any LLM or tool** — pluggable adapters for Anthropic, Bedrock, Fireworks, Cohere, and 10+ other providers
+- **Persist across restarts** — MongoDB checkpointing for durable graph and conversation state
 
 ## Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/maap-agent-builder.git
+git clone https://github.com/mongodb/maap-agent-builder.git
 cd maap-agent-builder
 
-# Set up environment and install
-make setup-env
-source .venv/bin/activate
-make install-and-config
+pip install -e .
 
-# Create an agent interactively
-make create-agent
+# Create a basic agent config (or use examples/)
+cp config/agents.yaml my_config.yaml
+export MONGODB_URI=mongodb://localhost:27017
+export ANTHROPIC_API_KEY=your_key
 
-# Add a tool to your agent
-make add-tool
+# Start the server with Gunicorn (4 workers by default)
+agent-builder serve --config my_config.yaml
 
-# Run your agent
-make run
+# Or use Flask dev server for development
+GUNICORN_WORKERS=1 agent-builder serve --config my_config.yaml
 ```
+
+Visit `http://localhost:5000/health` and start chatting at `POST /chat`.
 
 ## Installation
 
-Clone the repository and install the required dependencies:
+### From source
 
 ```bash
-git clone https://github.com/yourusername/maap-agent-builder.git
+git clone https://github.com/mongodb/maap-agent-builder.git
 cd maap-agent-builder
 pip install -e .
 ```
 
-For development, install with development dependencies:
+With development dependencies:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-Alternatively, use the provided Makefile:
+### Docker
 
 ```bash
-make install      # For regular installation
-make dev          # For development installation
-make verify       # Verify your installation is working correctly
+docker build -t maap-agent-builder .
+docker run -e MONGODB_URI=... -e ANTHROPIC_API_KEY=... \
+  -e GUNICORN_WORKERS=8 \
+  -p 5000:5000 \
+  -v $(pwd)/config:/app/config \
+  -v $(pwd)/prompts:/app/prompts \
+  maap-agent-builder
 ```
-
-### Project Structure
-
-The project uses a modern Python packaging structure with `pyproject.toml`:
-
-- **Core Dependencies**: All main dependencies are defined in `pyproject.toml`
-- **Development Dependencies**: Available as optional extras via `[dev]`
-- **Configuration**: Tool configurations for black, isort, mypy, pytest, and ruff are included
-
-### Development Setup
-
-For a complete development environment setup:
-
-```bash
-# Create and activate a virtual environment
-make setup-env
-source .venv/bin/activate
-
-# Install the package with development dependencies
-make install
-
-# Create default configuration directories
-make create-config
-```
-
-### Agent Configuration Setup
-
-The project includes several helpful Makefile targets to create and manage agent configurations:
-
-```bash
-# Create a new agent configuration with an interactive wizard
-make create-agent
-
-# Validate an existing configuration
-make validate-config
-
-# Add a new tool to your configuration
-make add-tool
-```
-
-These commands provide interactive prompts to help you create properly structured configuration files without having to manually edit YAML.
 
 ## Configuration
 
-MAAP Agent Builder is configured through YAML files and environment variables.
+### YAML Structure
+
+Agent configs are YAML files with these top-level sections:
+
+```yaml
+embeddings:      # Embedding models (for vector search, memory)
+  - name: voyage
+    provider: voyageai
+    model_name: voyage-3.5-lite
+
+llms:            # Language models
+  - name: claude-3.5
+    provider: bedrock
+    model_name: anthropic.claude-3-5-sonnet-20240620-v1:0
+
+tools:           # Tools available to agents
+  - name: search
+    tool_type: vector_search
+    namespace: my_db.products
+
+memory:          # Optional: long-term memory adapters
+  - name: recall
+    memory_type: episodic
+    embedding_model: voyage
+
+agent:           # Single-agent mode (existing configs)
+  agent_type: react
+  llm: claude-3.5
+  tools: [search]
+
+agents:          # Multi-agent mode (new)
+  - name: triage
+    agent_type: react
+    llm: claude-3.5
+    handoffs:
+      - name: billing
+        description: "Route billing questions here"
+
+checkpointer:    # MongoDB checkpointing (cross-worker state)
+  connection_str: ${MONGODB_URI}
+
+state:           # Standalone session state (optional)
+  connection_str: ${MONGODB_URI}
+
+governance:      # Optional: policies, audit, PII redaction
+  enabled: true
+  connection_str: ${MONGODB_URI}
+```
 
 ### Environment Variables
 
-Create a `.env` file in the root directory with your API keys and configuration:
+```bash
+# Required
+MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/?retryWrites=true
+ANTHROPIC_API_KEY=sk-ant-...
 
-```
-# LLM API Keys
-ANTHROPIC_API_KEY=your_anthropic_key
-OPENAI_API_KEY=your_openai_key
-FIREWORKS_API_KEY=your_fireworks_key
-TOGETHER_API_KEY=your_together_key
-COHERE_API_KEY=your_cohere_key
+# Optional LLM providers
+OPENAI_API_KEY=sk-...
+BEDROCK_REGION=us-west-2
+FIREWORKS_API_KEY=...
 
-# Azure OpenAI Configuration
-AZURE_OPENAI_API_KEY=your_azure_key
-AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com
-
-# Vector DB Configuration (if using long-term memory agents)
-MONGODB_URI=your_mongodb_connection_string
-
-# Application Configuration
+# Server settings (for multi-worker deployments)
+GUNICORN_WORKERS=4
+GUNICORN_TIMEOUT=120
+PORT=5000
 LOG_LEVEL=INFO
-FLASK_SECRET_KEY=your_flask_secret_key
 ```
 
-### Agent Configuration (agents.yaml)
+## Agent Types
 
-Create a YAML configuration file to define your agents, LLMs, embedding models, and tools:
+### Single-Agent Configuration
+
+Use the `agent:` key for a single agent:
 
 ```yaml
-# Configure the embedding model
-embeddings:
- - name: all-mpnet-v2
-   provider: huggingface
-   model_name: sentence-transformers/all-mpnet-base-v2
-   normalize: true
+agent:
+  name: my_agent
+  agent_type: react        # Required: react, tool_call, reflect, plan_execute_replan, long_term_memory
+  llm: claude-3.5          # Reference to an llm defined above
+  system_prompt: |
+    You are a helpful assistant...
+  tools: [search]          # Optional: list of tool names
+  
+  # For reflect agents
+  reflection_prompt: |
+    Review and improve your previous response...
 
-# Configure the language model
-llms:
-  - name: fireworks_llm_maverick
-    provider: fireworks
-    model_name: accounts/fireworks/models/llama4-maverick-instruct-basic
-    temperature: 0.7
-    max_tokens: 4000
-    streaming: False
-    additional_kwargs:
-      top_p: 0.9
-      top_k: 50
+  # For long-term memory agents
+  episodic_memory: my_memory    # Reference to a memory adapter
+  observational_memory: analysis
+```
 
-# Configure agent tools
-tools:
-  - name: product_recommender
-    tool_type: vector_search
-    description: Searches for relevant documents in the vector store
-    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-    namespace: amazon.products
-    embedding_model: all-mpnet-v2  # Reference to the embedding model defined above
-    additional_kwargs:
-      index_name: default
-      embedding_field: embedding
-      text_field: text
-      top_k: 5
-      min_score: 0.7
+### Multi-Agent Configuration (NEW)
 
-# Configure checkpointing
-checkpointer:
-  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+Use the `agents:` key (plural) to define multiple agents that can hand off to each other:
+
+```yaml
+agents:
+  - name: triage_agent
+    agent_type: react
+    llm: claude-3.5
+    system_prompt: "Classify requests and route to the right specialist."
+    handoffs:
+      - name: billing_agent
+        description: "Transfer for billing or payment questions"
+      - name: technical_agent
+        description: "Transfer for technical support"
+
+  - name: billing_agent
+    agent_type: react
+    llm: claude-3.5
+    system_prompt: "Handle billing questions."
+    tools: [billing_search]
+    handoffs:
+      - name: triage_agent
+
+  - name: technical_agent
+    agent_type: react
+    llm: claude-3.5
+    system_prompt: "Handle technical issues."
+    tools: [product_knowledge]
+
+entry_agent: triage_agent  # Which agent receives the first user message
+```
+
+When an agent calls a handoff tool (e.g., `transfer_to_billing_agent`), execution routes to the target agent in the same conversation thread. Use `examples/multi_agent_customer_support.yaml` as a reference.
+
+## Multi-Worker Deployments
+
+### Process-Local History (Single Worker)
+
+By default, conversation history is stored in-memory. This works fine for single-worker deployments but doesn't survive process restarts.
+
+### Cross-Worker Session State
+
+For Gunicorn multi-worker deployments, enable either a standalone `state:` config or full `governance:` config to share conversation history across workers:
+
+```yaml
+# Option 1: Standalone state (no governance)
+state:
+  enabled: true
+  connection_str: ${MONGODB_URI}
   db_name: agent_state
-  collection_name: checkpoints
-  name: rag_agent_checkpointer
+  collection_name: agent_sessions
 
-# Optional MongoDB-backed governance controls
+# Option 2: Full governance (policies, audit, state all enabled)
 governance:
   enabled: true
-  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-  db_name: agent_control_plane
-  default_policy:
-    permissions:
-      - "*"
-  policy:
-    provider: mongodb
-    collection_name: agent_policies
-  audit:
-    enabled: true
-    collection_name: agent_audit_events
+  connection_str: ${MONGODB_URI}
   state:
     enabled: true
-    collection_name: agent_sessions
-
-# Configure the agent
-agent:
-  name: rag_react_agent
-  agent_type: react
-  llm: fireworks_llm_maverick  # Reference to the LLM defined above
-  tools:
-    - product_recommender  # Reference to the tool defined above
-  system_prompt_path: ./prompts/rag_system_prompt.txt
 ```
 
-You can create this configuration manually or use the provided Makefile targets:
+### Starting Multiple Workers
 
 ```bash
-# Create the basic configuration structure
-make create-config
+# 8 workers, 120-second timeout
+GUNICORN_WORKERS=8 GUNICORN_TIMEOUT=120 agent-builder serve --config config/agents.yaml
 
-# Add a new agent interactively
-make create-agent  # You'll be prompted for agent name, type, LLM provider, and model
-
-# Add a new tool interactively
-make add-tool  # You'll be prompted for tool name, type, and description
+# Or via Docker env var
+docker run -e GUNICORN_WORKERS=8 ... maap-agent-builder
 ```
 
-## API Usage
+The `/health` endpoint responds over HTTP (no cookies or session state), so load balancers can route traffic cleanly. Each worker reads and writes chat history to the same MongoDB collection, so conversation state is consistent across the fleet.
 
-The MAAP Agent Builder provides a REST API for interacting with your agents. Here are the main endpoints:
+## Memory Systems
 
-### Chat Endpoint
+### Episodic Memory
 
+Stores verbatim conversation snippets (what was said, when). Useful for recall:
+
+```yaml
+memory:
+  - name: episode_recall
+    memory_type: episodic
+    connection_str: ${MONGODB_URI}
+    namespace: my_db.episodes
+    embedding_model: voyage
+    index_name: episodic_index
+
+agent:
+  episodic_memory: episode_recall
 ```
-POST /chat
+
+### Observational Memory
+
+Uses an LLM to distil raw conversation into structured facts (user preferences, behavioral patterns). Useful for learning:
+
+```yaml
+memory:
+  - name: observations
+    memory_type: observational
+    connection_str: ${MONGODB_URI}
+    namespace: my_db.observations
+    embedding_model: voyage
+    llm: claude-3.5
+    extraction_prompt: |
+      Extract key facts from this conversation: {text}
+
+agent:
+  observational_memory: observations
 ```
 
-Request body:
+## API Endpoints
 
-```json
-{
-  "message": "Your user message here",
-  "config": {
-    "thread_id": "optional-thread-id"  // If not provided, a new thread will be created
-  }
-}
+### Chat
+
+```bash
+curl -X POST http://localhost:5000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "What is the capital of France?",
+    "config": {
+      "thread_id": "user-123-conv-1",
+      "identity": {
+        "tenant_id": "acme-corp",
+        "user_id": "user@example.com",
+        "roles": ["customer"]
+      }
+    }
+  }'
 ```
 
 Response:
 
 ```json
 {
-  "response": "Agent's response",
+  "response": "Paris is the capital of France.",
   "history": [
-    ["user", "Your user message here"],
-    ["assistant", "Agent's response"]
+    ["user", "What is the capital of France?"],
+    ["assistant", "Paris is the capital of France."]
   ],
-  "thread_id": "thread-id"  // Use this ID to continue the conversation
-}
-```
-
-### Reset Conversation History
-
-```
-POST /reset
-```
-
-Request body:
-
-```json
-{
-  "thread_id": "thread-id"  // Optional. If not provided, all threads will be reset
-}
-```
-
-Response:
-
-```json
-{
-  "status": "success",
-  "message": "Chat history reset for thread thread-id"
-}
-```
-
-### List Active Threads
-
-```
-GET /threads
-```
-
-Response:
-
-```json
-{
-  "status": "success",
-  "threads": ["thread-id-1", "thread-id-2"],
-  "count": 2
+  "thread_id": "user-123-conv-1"
 }
 ```
 
 ### Health Check
 
-```
-GET /health
+```bash
+curl http://localhost:5000/health
 ```
 
-Response:
+### Reset Conversation
+
+```bash
+curl -X POST http://localhost:5000/reset \
+  -H "Content-Type: application/json" \
+  -d '{"thread_id": "user-123-conv-1"}'
+```
+
+### List Active Threads
+
+```bash
+curl http://localhost:5000/threads
+```
+
+## Governance & Security
+
+### Access Policies
+
+Define role-based or tenant-based policies in MongoDB:
+
+```bash
+db.agent_policies.insertOne({
+  "tenant_id": "acme-corp",
+  "role": "support",
+  "permissions": ["tools.call.search", "tools.call.send_email"],
+  "denied_tools": ["delete_user"],
+  "blocked_topics": ["salary", "passwords"],
+  "pii_redaction": true,
+  "prompt_injection_detection": true
+})
+```
+
+### Guardrails
+
+Automatically applied when `governance.enabled: true`:
+
+- **Blocked Topics** — reject requests mentioning restricted words
+- **Prompt Injection Detection** — pattern-match common jailbreak attempts
+- **PII Redaction** — redact emails and phone numbers from input/output
+- **Tool Allowlisting** — only call tools the user's policy permits
+
+### Audit Logging
+
+All events are logged to MongoDB (`agent_audit_events` by default):
 
 ```json
 {
-  "status": "healthy",
-  "agent_loaded": true
-}
-```
-
-## Thread-Based Conversation Management
-
-MAAP Agent Builder uses thread-based conversation history to support multiple concurrent conversations:
-
-- Each conversation is assigned a unique `thread_id`
-- You can specify your own `thread_id` or let the system generate one
-- The conversation history is maintained separately for each thread
-- You can reset a specific thread or all threads using the `/reset` endpoint
-- Thread IDs can be used to implement multi-user support or to separate different conversation contexts
-
-## Command-Line Interface
-
-MAAP Agent Builder provides a CLI for easy server management:
-
-```bash
-# Start the server with default settings
-agent-builder serve --config config/agents.yaml
-
-# Start with custom host and port
-agent-builder serve --config config/agents.yaml --host 127.0.0.1 --port 8000
-
-# Run in debug mode with verbose logging
-agent-builder serve --config config/agents.yaml --debug --log-level DEBUG
-
-# Load environment variables from a specific file
-agent-builder serve --config config/agents.yaml --env-file .env.production
-```
-
-You can also use the provided Makefile target:
-
-```bash
-make run  # Uses the default configuration at config/agents.yaml
-```
-
-## Docker Support
-
-You can run MAAP Agent Builder in Docker for easy deployment:
-
-```bash
-# Build the Docker image
-make docker-build
-
-# Run the Docker container
-make docker-run
-```
-
-## Docker Support
-
-You can run MAAP Agent Builder in Docker for easy deployment:
-
-```bash
-# Build the Docker image
-make docker-build
-
-# Run the Docker container
-make docker-run
-```
-
-The Docker container mounts your local configuration files, logs, and prompts directories, so you can modify them without rebuilding the image.
-
-MAAP Agent Builder supports several agent types, each with different capabilities:
-
-1. **react**: ReAct agents that think step-by-step and use tools
-2. **tool_call**: Agents that use OpenAI-style tool calling
-3. **reflect**: Agents that use a generate-reflect loop for improved reasoning
-4. **plan_execute_replan**: Agents that plan, execute steps, and replan as needed
-5. **long_term_memory**: Agents with vector store-backed long-term memory
-
-### Agent Type-Specific Configuration
-
-Different agent types require different configuration parameters:
-
-#### React Agent
-```yaml
-agent:
-  agent_type: react
-  name: react_agent
-  llm: gpt4
-  system_prompt: "You are a helpful assistant..."
-  tools:
-    - search_tool
-```
-
-#### Reflection Agent
-```yaml
-agent:
-  agent_type: reflect
-  name: reflection_agent
-  llm: claude
-  system_prompt: "You are a helpful assistant..."
-  reflection_prompt: "Review your previous response and improve it..."
-  tools:
-    - calculator
-```
-
-#### Plan-Execute-Replan Agent
-```yaml
-agent:
-  agent_type: plan_execute_replan
-  name: planner_agent
-  llm: gpt4
-  system_prompt: "You are a helpful assistant..."
-  tools:
-    - search_tool
-    - calculator
-```
-
-#### Long-Term Memory Agent
-```yaml
-agent:
-  agent_type: long_term_memory
-  name: memory_agent
-  llm: claude
-  connection_str: ${MONGODB_URI}
-  namespace: agent_db.memories
-  tools:
-    - search_tool
-```
-
-## Running Locally
-
-There are several ways to run the MAAP Agent Builder locally:
-
-### 1. Using the CLI
-
-```bash
-# Set the configuration path
-export AGENT_CONFIG_PATH=/path/to/your/agents.yaml
-
-# Run the server
-python -m agent_builder.cli serve --config /path/to/your/agents.yaml --port 5000
-```
-
-### 2. Using WSGI
-
-```bash
-# Set the configuration path
-export AGENT_CONFIG_PATH=/path/to/your/agents.yaml
-
-# Run with Gunicorn (recommended for production)
-gunicorn -b 0.0.0.0:5000 agent_builder.wsgi:application
-```
-
-### 3. Using Python Directly
-
-```python
-from agent_builder.app import AgentApp
-
-# Create the agent app with your configuration
-agent_app = AgentApp('/path/to/your/agents.yaml')
-
-# Run the app
-agent_app.run(host='0.0.0.0', port=5000, debug=True)
-```
-
-### 4. Using Docker
-
-The project includes Docker support for easy deployment:
-
-```bash
-# Build the Docker image
-make docker-build
-
-# Run the Docker container
-make docker-run
-
-# For debugging with an interactive shell
-make docker-debug
-```
-
-When running with Docker, environment variables from your `.env` file are automatically passed to the container. Additional environment variables can be passed at runtime:
-
-```bash
-# Pass specific environment variables to the Docker container
-LOG_LEVEL=DEBUG make docker-run
-```
-
-## API Endpoints
-
-Once the server is running, you can interact with your agent through the following endpoints:
-
-- **GET /health**: Health check endpoint
-- **POST /chat**: Send a message to the agent
-  ```json
-  {
-    "message": "What is the capital of France?"
+  "event_type": "guardrail.input",
+  "tenant_id": "acme-corp",
+  "user_id": "user@example.com",
+  "agent_id": "triage_agent",
+  "thread_id": "conv-123",
+  "payload": {
+    "allowed": true,
+    "reason": "",
+    "stage": "input_guardrail"
   }
-  ```
-- **POST /reset**: Reset the conversation history
-
-## Example: Curl Commands
-
-```bash
-# Health check
-curl http://localhost:5000/health
-
-# Send a message to the agent
-curl -X POST http://localhost:5000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What is the capital of France?"}'
-
-# Reset conversation
-curl -X POST http://localhost:5000/reset
-```
-
-## Advanced Configuration
-
-### Loading Prompts from Files
-
-Instead of including prompts directly in the YAML, you can load them from files:
-
-```yaml
-agent:
-  agent_type: react
-  name: my_agent
-  llm: gpt4
-  system_prompt_path: /path/to/system_prompt.txt
-  tools:
-    - search_tool
-```
-
-### Environment Variable Substitution
-
-The configuration supports environment variable substitution with default values:
-
-```yaml
-llms:
-  - name: openai_llm
-    provider: openai
-    model_name: ${OPENAI_MODEL_NAME:-gpt-4-turbo}
-    temperature: ${TEMPERATURE:-0.7}
-```
-
-### MongoDB Checkpointing
-
-For persistent conversations across restarts, configure a MongoDB checkpointer:
-
-```yaml
-checkpointer:
-  connection_str: ${MONGODB_CONNECTION_STRING}
-  db_name: langgraph
-  collection_name: checkpoints
+}
 ```
 
 ## Project Structure
 
-The MAAP Agent Builder is organized into several modules:
-
 ```
 agent_builder/
-├── agents/            # Agent implementations (React, ReflexionAgent, etc.)
-├── config/            # Configuration loading and processing
-├── embeddings/        # Embedding model implementations
-├── llms/              # LLM provider integrations
-├── tools/             # Tool implementations
-└── utils/             # Utility functions and helpers
+├── agents/
+│   ├── agent_gen.py          # Factory for creating different agent types
+│   ├── loader.py             # Load agent config and create agent
+│   ├── multi_agent.py        # Multi-agent graph builder + handoff tools
+│   ├── reflection.py         # Reflection agent implementation
+│   ├── plan_execute_replan.py
+│   └── long_term_memory.py
+├── core/
+│   ├── interfaces.py         # Abstract adapter interfaces
+│   └── types.py              # IdentityContext, AccessPolicy, etc.
+├── embeddings/
+│   ├── loader.py             # Load embedding models from config
+│   └── adapters.py           # Concrete embedding model adapters
+├── llms/
+│   ├── loader.py             # Load LLMs from config
+│   └── adapters.py           # Anthropic, Bedrock, Fireworks, etc.
+├── tools/
+│   ├── loader.py             # Load tools from config
+│   ├── adapters.py           # Tool adapters (vector search, MCP, etc.)
+│   ├── mongodb.py            # MongoDB vector and full-text search
+│   └── mcp.py                # Model Context Protocol integration
+├── memory/
+│   ├── adapters.py           # MemoryAdapterFactory
+│   └── mongodb_memory.py     # MongoDB episodic/observational memory
+├── state/
+│   └── mongodb_state.py      # Session state persistence
+├── security/
+│   ├── guardrails.py         # Input/output/tool guardrails
+│   └── policies.py           # Policy providers (static, MongoDB)
+├── audit/
+│   └── mongodb_audit.py      # Audit event logging
+├── app.py                    # Flask app, /chat /health /reset routes
+├── yaml_loader.py            # YAML config parser
+└── utils/
+    ├── checkpointer.py       # MongoDB LangGraph checkpointer
+    └── logging_config.py     # Structured logging
 ```
 
-### Key Files
+## Examples
 
-- `pyproject.toml`: Defines project metadata, dependencies, and tool configurations
-- `agent_builder/app.py`: The main Flask application
-- `agent_builder/cli.py`: Command-line interface
-- `agent_builder/yaml_loader.py`: YAML configuration processor
-- `agent_builder/agents.yaml`: Default agent configuration
+The `examples/` directory contains ready-to-run configs:
 
-### Development Workflow
+- `react_rag_mongodb.yaml` — Single ReAct agent with vector search
+- `reflection_quality_reviewer.yaml` — Reflection agent that reviews its own answers
+- `plan_execute_replan_research.yaml` — Planning agent that researches a topic
+- `long_term_memory_assistant.yaml` — Agent with episodic memory that recalls prior conversations
+- `governed_enterprise_support.yaml` — Multi-agent support with governance, policies, and audit
+- `multi_agent_customer_support.yaml` — 3-agent triage system with bidirectional handoffs
 
-1. Install the package with development dependencies
-2. Make changes to the codebase
-3. Run linting and tests to verify your changes
-4. Build and test with Docker if needed
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Missing API Keys**: Ensure all required API keys are set in your environment variables
-2. **Configuration Loading Error**: Check your YAML syntax for errors
-   - Use `make validate-config` to verify your agents.yaml file
-3. **LLM Provider Not Found**: Verify that the LLM provider is supported and correctly configured
-4. **Tool Execution Failed**: Check that tools have all required parameters
-5. **Installation Issues**: If you encounter installation problems:
-   - Ensure you have the latest pip version: `pip install --upgrade pip`
-   - Try installing with verbose output: `pip install -e ".[dev]" -v`
-   - Check for conflicting dependencies in your environment
-
-### Logging
-
-Adjust the logging level to get more detailed information:
+Run any of them:
 
 ```bash
-export LOG_LEVEL=DEBUG
+agent-builder serve --config examples/multi_agent_customer_support.yaml
 ```
 
-### Package Development
-
-When developing the package:
+## Testing
 
 ```bash
-# Run linting checks
-make lint
+pip install -e ".[dev]"
 
-# Format code automatically
-make format
+# Unit tests (no services required)
+pytest tests/ -v
 
-# Run tests
-make test
+# Specific test file
+pytest tests/test_multi_agent.py -v
 
-# Clean build artifacts
-make clean
-
-# Build distribution packages
-make build-package
+# With coverage
+pytest tests/ --cov=agent_builder
 ```
 
-### Agent Development
-
-When developing agents and tools:
+## Development
 
 ```bash
-# Create a new agent configuration
-make create-agent
+# Format code
+black agent_builder tests
 
-# Add a new tool to your configuration
-make add-tool
+# Lint
+flake8 agent_builder tests
+mypy agent_builder
 
-# Validate your configuration
-make validate-config
-
-# Run your agent locally
-make run
-
-# Run in Docker container
-make docker-run
+# Type check with mypy
+mypy agent_builder --ignore-missing-imports
 ```
+
+## License
+
+Licensed under the Apache License 2.0. See LICENSE file for details.
 
 ## Contributing
 
-Contributions to MAAP Agent Builder are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please:
 
-## License
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass and code is formatted
+5. Submit a pull request with a clear description
 
-This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
-
-1. **Fork the repository** and clone it locally
-2. **Create a new branch** for your feature or bugfix
-3. **Make your changes** and ensure tests pass
-4. **Run linting** to ensure code quality: `make lint`
-5. **Add tests** for new functionality
-6. **Submit a pull request** with a clear description of your changes
-
-### Development Guidelines
-
-- Follow PEP 8 style guidelines
-- Write docstrings for functions and classes
-- Add type hints to new code
-- Ensure test coverage for new features
-
-### Testing
-
-Run the test suite with:
-
-```bash
-make test
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+For questions or issues, open a GitHub issue or check the examples directory for working configs.
