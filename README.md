@@ -22,19 +22,25 @@ cd maap-agent-builder
 
 pip install -e .
 
-# Create a basic agent config (or use examples/)
-cp config/agents.yaml my_config.yaml
+# Configure environment + a config file
+cp .env.example .env             # then edit with your keys
 export MONGODB_URI=mongodb://localhost:27017
 export ANTHROPIC_API_KEY=your_key
 
-# Start the server with Gunicorn (4 workers by default)
-agent-builder serve --config my_config.yaml
+# Run the dev server (Flask, single process) — good for local development
+agent-builder serve --config config/agents.yaml
 
-# Or use Flask dev server for development
-GUNICORN_WORKERS=1 agent-builder serve --config my_config.yaml
+# …or run a production-like multi-worker server with Gunicorn
+make serve-prod GUNICORN_WORKERS=4
 ```
 
 Visit `http://localhost:5000/health` and start chatting at `POST /chat`.
+
+> **Dev vs. production:** `agent-builder serve` (and `make run`) start the
+> single-process Flask development server. For multi-worker deployments use
+> Gunicorn via `make serve-prod`, the Docker image, or a direct
+> `gunicorn agent_builder.wsgi:application` invocation. See
+> [Multi-Worker Deployments](#multi-worker-deployments).
 
 ## Installation
 
@@ -54,7 +60,15 @@ pip install -e ".[dev]"
 
 ### Docker
 
+The bundled Dockerfile runs Gunicorn (multi-worker) via `startup.sh`, exposes
+a `/health` healthcheck, and ships the `examples/` configs at `/app/examples/`.
+
 ```bash
+# Via the Makefile (recommended) — override workers/port as needed
+make docker-build
+make docker-run GUNICORN_WORKERS=8 PORT=5000
+
+# …or directly
 docker build -t maap-agent-builder .
 docker run -e MONGODB_URI=... -e ANTHROPIC_API_KEY=... \
   -e GUNICORN_WORKERS=8 \
@@ -62,6 +76,33 @@ docker run -e MONGODB_URI=... -e ANTHROPIC_API_KEY=... \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/prompts:/app/prompts \
   maap-agent-builder
+```
+
+`make docker-run` auto-loads a `.env` file if present and mounts your local
+`config/`, `logs/`, and `prompts/` directories.
+
+### Using the Makefile
+
+Common workflows are wrapped as `make` targets (run `make help` for the full list):
+
+| Target | Description |
+|--------|-------------|
+| `make setup-env` | Create a virtualenv in `.venv` |
+| `make install` | Install the package with dev extras |
+| `make create-config` | Scaffold `config/` and a sample prompt |
+| `make validate-config` | Validate the config (single- **or** multi-agent) |
+| `make run` / `make serve` | Run the Flask dev server (single process) |
+| `make serve-prod` | Run Gunicorn multi-worker (production-like) |
+| `make docker-build` / `make docker-run` | Build / run the Docker image |
+| `make test` | Run the test suite |
+| `make lint` / `make format` | Lint / format the code |
+
+Server settings are overridable on any relevant target — `PORT`,
+`GUNICORN_WORKERS`, `GUNICORN_TIMEOUT`, and `CONFIG_PATH`:
+
+```bash
+make serve-prod GUNICORN_WORKERS=8 PORT=8080
+make validate-config CONFIG_PATH=examples/multi_agent_customer_support.yaml
 ```
 
 ## Configuration
@@ -279,11 +320,20 @@ governance:
 
 ### Starting Multiple Workers
 
-```bash
-# 8 workers, 120-second timeout
-GUNICORN_WORKERS=8 GUNICORN_TIMEOUT=120 agent-builder serve --config config/agents.yaml
+Multi-worker serving is handled by **Gunicorn** against the WSGI entrypoint
+`agent_builder.wsgi:application`. `agent-builder serve` is the single-process
+Flask dev server and does **not** read `GUNICORN_WORKERS`.
 
-# Or via Docker env var
+```bash
+# Via the Makefile
+make serve-prod GUNICORN_WORKERS=8 GUNICORN_TIMEOUT=120
+
+# Gunicorn directly (the path used by the Docker image's startup.sh)
+AGENT_CONFIG_PATH=config/agents.yaml \
+  gunicorn --workers 8 --timeout 120 --bind 0.0.0.0:5000 \
+  agent_builder.wsgi:application
+
+# Via Docker
 docker run -e GUNICORN_WORKERS=8 ... maap-agent-builder
 ```
 
@@ -473,10 +523,11 @@ agent_builder/
 The `examples/` directory contains ready-to-run configs:
 
 - `react_rag_mongodb.yaml` — Single ReAct agent with vector search
+- `tool_call_mcp_agent.yaml` — Tool-calling agent backed by an MCP server
 - `reflection_quality_reviewer.yaml` — Reflection agent that reviews its own answers
 - `plan_execute_replan_research.yaml` — Planning agent that researches a topic
 - `long_term_memory_assistant.yaml` — Agent with episodic memory that recalls prior conversations
-- `governed_enterprise_support.yaml` — Multi-agent support with governance, policies, and audit
+- `governed_enterprise_support.yaml` — Agent with governance, policies, and audit enabled
 - `multi_agent_customer_support.yaml` — 3-agent triage system with bidirectional handoffs
 
 Run any of them:
