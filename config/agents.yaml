@@ -92,6 +92,43 @@ governance:
     enabled: true
     collection_name: agent_sessions
 
+# ── Multi-agent configuration (alternative to the single 'agent:' key) ────────
+#
+# Use 'agents:' (plural) to define multiple agents that can hand off between
+# each other.  'entry_agent' sets which agent receives the first user message.
+# See examples/multi_agent_customer_support.yaml for a full working example.
+#
+# agents:
+#   - name: triage_agent
+#     agent_type: react
+#     llm: claude-3.5
+#     system_prompt: "Classify requests and route to the right specialist."
+#     handoffs:
+#       - name: billing_agent
+#         description: "Transfer for billing or payment questions"
+#       - name: technical_agent
+#         description: "Transfer for technical support issues"
+#
+#   - name: billing_agent
+#     agent_type: react
+#     llm: claude-3.5
+#     system_prompt: "Handle billing and payment questions."
+#     tools:
+#       - billing_tool
+#     handoffs:
+#       - name: triage_agent
+#         description: "Return to triage for non-billing questions"
+#
+#   - name: technical_agent
+#     agent_type: react
+#     llm: claude-3.5
+#     system_prompt: "Handle technical support issues."
+#     tools:
+#       - technical_tool
+#
+# entry_agent: triage_agent
+
+# ── Single-agent configuration ─────────────────────────────────────────────────
 # Configure the agent
 agent:
   name: rag_react_agent

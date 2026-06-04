@@ -43,6 +43,11 @@ class AgentConfig:
     # of the legacy hard-coded HuggingFace + MongoDBAtlasVectorSearch path.
     episodic_memory: Optional[BaseEpisodicMemoryAdapter] = None
     observational_memory: Optional[BaseObservationalMemoryAdapter] = None
+    # ── Multi-agent handoffs ─────────────────────────────────────────────
+    # Each entry is a plain agent-name string or a dict with 'name' and an
+    # optional 'description' key.  The loader converts these into
+    # create_handoff_tool() instances appended to the agent's tool list.
+    handoff_targets: List[Any] = field(default_factory=list)
     # ── Catch-all ───────────────────────────────────────────────────────
     additional_kwargs: Optional[Dict[str, Any]] = None
 
@@ -209,6 +214,27 @@ def load_agent(config: AgentConfig) -> Any:
         for key, value in config.additional_kwargs.items():
             if key not in agent_kwargs:
                 agent_kwargs[key] = value
+
+    # Inject handoff tools for multi-agent routing.  Must happen after
+    # agent_kwargs["tools"] is finalised so the base tools are not lost.
+    if config.handoff_targets:
+        from agent_builder.agents.multi_agent import create_handoff_tool
+
+        handoff_tools = []
+        for target in config.handoff_targets:
+            if isinstance(target, str):
+                handoff_tools.append(create_handoff_tool(target))
+            elif isinstance(target, dict):
+                handoff_tools.append(
+                    create_handoff_tool(target["name"], target.get("description"))
+                )
+        agent_kwargs["tools"] = list(agent_kwargs.get("tools") or []) + handoff_tools
+        logger.info(
+            "Injected %d handoff tool(s) into agent '%s': %s",
+            len(handoff_tools),
+            config.name,
+            [t.name for t in handoff_tools],
+        )
 
     logger.debug(f"Creating {agent_type} agent with parameters: {agent_kwargs}")
 

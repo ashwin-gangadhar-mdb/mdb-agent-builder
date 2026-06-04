@@ -1,0 +1,146 @@
+# Multi-agent customer support example
+#
+# Three agents collaborate to handle customer enquiries:
+#   triage_agent  — classifies the request and routes to a specialist
+#   billing_agent — handles billing, payments, and account questions
+#   technical_agent — handles product issues and technical support
+#
+# Handoffs are bidirectional: any specialist can return to triage when
+# the conversation topic changes.
+#
+# Usage:
+#   agent-builder serve --config examples/multi_agent_customer_support.yaml
+
+# ── Embeddings ────────────────────────────────────────────────────────────────
+embeddings:
+  - name: voyage_embeddings
+    provider: voyageai
+    model_name: voyage-3.5-lite
+    additional_kwargs:
+      output_dimension: 512
+
+# ── Language models ───────────────────────────────────────────────────────────
+llms:
+  - name: claude-3.5
+    provider: bedrock
+    model_name: anthropic.claude-3-5-sonnet-20240620-v1:0
+    temperature: 0.3
+    max_tokens: 2048
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
+tools:
+  - name: billing_records
+    tool_type: vector_search
+    description: Search billing history, invoices, and payment records
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: support.billing_records
+    embedding_model: voyage_embeddings
+    additional_kwargs:
+      index_name: billing_vector_index
+      top_k: 5
+      min_score: 0.65
+
+  - name: product_knowledge
+    tool_type: vector_search
+    description: Search product documentation and known issues
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: support.product_docs
+    embedding_model: voyage_embeddings
+    additional_kwargs:
+      index_name: product_vector_index
+      top_k: 5
+      min_score: 0.65
+
+  - name: ticket_search
+    tool_type: full_text_search
+    description: Search open and closed support tickets
+    connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+    namespace: support.tickets
+    additional_kwargs:
+      index_name: ticket_search_index
+      text_field: description
+      top_k: 3
+
+# ── Checkpointing (shared across all agents in the graph) ─────────────────────
+checkpointer:
+  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+  db_name: support_agent_state
+  collection_name: checkpoints
+  name: support_checkpointer
+
+# ── Governance (optional) ─────────────────────────────────────────────────────
+governance:
+  enabled: false
+  connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
+  db_name: agent_control_plane
+
+# ── Agents ────────────────────────────────────────────────────────────────────
+# 'agents' (plural) activates multi-agent mode.
+# 'entry_agent' is which agent receives the first user message.
+entry_agent: triage_agent
+
+agents:
+  - name: triage_agent
+    agent_type: react
+    llm: claude-3.5
+    system_prompt: |
+      You are the first point of contact for customer support.
+      Classify each customer request and route it to the right specialist:
+      - Billing questions (invoices, payments, subscriptions) → billing_agent
+      - Technical issues (errors, crashes, configuration) → technical_agent
+      For general questions you can answer directly.
+      Always be polite and acknowledge the customer's concern before routing.
+    # triage_agent has no domain tools; it routes via handoff tools
+    handoffs:
+      - name: billing_agent
+        description: >
+          Transfer to the billing specialist for questions about invoices,
+          payments, charges, refunds, or subscription changes.
+      - name: technical_agent
+        description: >
+          Transfer to the technical support specialist for product errors,
+          bugs, configuration issues, or how-to questions.
+
+  - name: billing_agent
+    agent_type: react
+    llm: claude-3.5
+    system_prompt: |
+      You are a billing support specialist.
+      You have access to billing records and can answer questions about
+      invoices, payment history, and subscription details.
+      If a customer's issue is actually technical (product error, bug, etc.)
+      transfer them to the technical_agent.
+      If their question is completely outside your domain, return to triage.
+    tools:
+      - billing_records
+    handoffs:
+      - name: technical_agent
+        description: >
+          Transfer to technical support when the customer has a product
+          or technical issue rather than a billing question.
+      - name: triage_agent
+        description: >
+          Return to triage when the question is outside billing or
+          a new, unrelated topic has come up.
+
+  - name: technical_agent
+    agent_type: react
+    llm: claude-3.5
+    system_prompt: |
+      You are a technical support specialist.
+      You have access to product documentation, known issues, and support
+      tickets. Help customers troubleshoot problems and find solutions.
+      If a customer has a billing question, transfer them to the billing_agent.
+      If their question is completely outside your domain, return to triage.
+    tools:
+      - product_knowledge
+      - ticket_search
+    handoffs:
+      - name: billing_agent
+        description: >
+          Transfer to billing support when the customer has a payment or
+          account question rather than a technical issue.
+      - name: triage_agent
+        description: >
+          Return to triage when the question is outside technical support
+          or a new unrelated topic has come up.
