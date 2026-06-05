@@ -6,8 +6,11 @@ handling agent initialization, request routing, and chat history management.
 """
 
 import os
+import secrets
+import time
 import uuid
-from typing import Any, Dict, Optional
+from functools import wraps
+from typing import Any, Callable, Dict, Optional
 
 try:
     from dotenv import load_dotenv
@@ -15,7 +18,7 @@ except ImportError:  # python-dotenv is an optional convenience dependency
     def load_dotenv(*args: Any, **kwargs: Any) -> bool:
         return False
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, g
 
 from agent_builder.audit.mongodb_audit import MongoDBAuditProvider
 from agent_builder.core.interfaces import BaseAuditAdapter, BasePolicyAdapter, BaseStateAdapter
@@ -62,8 +65,18 @@ class AgentApp:
             LangGraph checkpointer for durable, cross-worker conversation state.
         """
         self.app = Flask(__name__)
-        self.app.secret_key = os.environ.get("FLASK_SECRET_KEY", str(uuid.uuid4()))
+        secret_key = os.environ.get("FLASK_SECRET_KEY")
+        if not secret_key:
+            if os.environ.get("FLASK_ENV") == "production":
+                raise ValueError("FLASK_SECRET_KEY must be set in production")
+            secret_key = secrets.token_hex(32)
+            logger.warning(
+                "Auto-generated FLASK_SECRET_KEY; sessions will be "
+                "invalidated on restart. Set FLASK_SECRET_KEY explicitly."
+            )
+        self.app.secret_key = secret_key
         self.app.config["PERMANENT_SESSION_LIFETIME"] = session_ttl
+        self.app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB request limit
         self.config_path = config_path
         self.components = None
         self.agent = None
@@ -83,6 +96,9 @@ class AgentApp:
 
         # Register routes
         self.register_routes()
+
+        # Register security middleware (after-request headers)
+        self._register_security_middleware()
 
         # Load agent components
         self.load_components()
@@ -171,6 +187,90 @@ class AgentApp:
                     ),
                 )
                 logger.info("Standalone state provider configured for multi-worker deployments")
+
+    # ------------------------------------------------------------------
+    # Security helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _error_response(message: str, status: int, **extra) -> tuple:
+        """Return a JSON error response without exposing internals."""
+        return jsonify({"error": message, **extra}), status
+
+    def _check_thread_ownership(self, thread_id: str, identity: IdentityContext):
+        """Return True if *identity* owns *thread_id* or the thread is unknown.
+
+        An unknown thread is considered safe — it does not exist yet.
+        When a state provider is configured with tenant isolation, a
+        thread that belongs to a *different* tenant is rejected.
+        """
+        if not self.state_provider:
+            return True
+        try:
+            doc = self.state_provider.load_thread(thread_id)
+        except Exception:
+            logger.warning("Failed to verify thread ownership for %s", thread_id)
+            return True
+        if doc is None:
+            return True
+        return doc.get("tenant_id", "default") == identity.tenant_id
+
+    def _require_csrf_header(self):
+        """Decorator that requires ``X-Requested-With: XMLHttpRequest``.
+
+        Browsers cannot set this header on cross-origin requests without
+        a preflight CORS approval, providing a basic CSRF defence when the
+        API is consumed from a browser-frontend.
+        """
+
+        def decorator(fn: Callable):
+            @wraps(fn)
+            def wrapper(*args, **kwargs):
+                if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+                    return self._error_response(
+                        "Missing required X-Requested-With header", 403
+                    )
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
+    # ------------------------------------------------------------------
+    # Simple in-process rate limiter
+    # ------------------------------------------------------------------
+
+    _rate_limit_buckets: Dict[str, tuple] = {}
+
+    @classmethod
+    def _check_rate_limit(cls, key: str, max_requests: int, window_secs: int) -> bool:
+        """Return True if the caller is within the rate limit for *key*."""
+        now = time.time()
+        count, reset = cls._rate_limit_buckets.get(key, (0, now + window_secs))
+        if now > reset:
+            count = 0
+            reset = now + window_secs
+        count += 1
+        cls._rate_limit_buckets[key] = (count, reset)
+        # Prune stale buckets periodically (every ~1000 requests)
+        if len(cls._rate_limit_buckets) > 1000:
+            stale = [k for k, (_, r) in cls._rate_limit_buckets.items() if now > r]
+            for k in stale:
+                cls._rate_limit_buckets.pop(k, None)
+        return count <= max_requests
+
+    def _register_security_middleware(self):
+        """Apply after-request security headers and log masking."""
+
+        @self.app.after_request
+        def _add_security_headers(response):
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-XSS-Protection"] = "0"
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+            return response
 
     def record_audit(
         self,
@@ -323,21 +423,31 @@ class AgentApp:
         def chat():
             """Chat endpoint to interact with the agent."""
             if not self.agent:
-                return jsonify({"error": "Agent not loaded"}), 503
+                return self._error_response("Agent not loaded", 503)
+
+            if not request.is_json:
+                return self._error_response("Content-Type must be application/json", 415)
 
             data = request.get_json(silent=True)
             if not data or "message" not in data:
-                return jsonify({"error": "Missing required field: message"}), 400
+                return self._error_response("Missing required field: message", 400)
 
             # Work on a shallow copy so the parsed request body is never mutated.
             data = dict(data)
             request_config = data.pop("config", None) or {}
-            if not request_config:
-                logger.warning("No config provided in request, using empty config")
-
-            thread_id = request_config.get("thread_id") or str(uuid.uuid4())
-            user_message = data.pop("message")
             identity = IdentityContext.from_config(request_config)
+            thread_id = request_config.get("thread_id") or str(uuid.uuid4())
+
+            # ── rate limit ────────────────────────────────────────────────────
+            rate_key = f"chat:{identity.tenant_id}:{identity.user_id}"
+            if not self._check_rate_limit(rate_key, max_requests=60, window_secs=60):
+                return self._error_response("Too many requests — rate limit exceeded", 429)
+
+            # ── thread ownership check ────────────────────────────────────────
+            if not self._check_thread_ownership(thread_id, identity):
+                return self._error_response("Thread not found", 404, thread_id=thread_id)
+
+            user_message = data.pop("message")
             policy = self.policy_provider.get_policy(identity)
 
             # ── input guardrail ──────────────────────────────────────────────
@@ -354,15 +464,11 @@ class AgentApp:
                     },
                 )
                 if not decision.allowed:
-                    return (
-                        jsonify(
-                            {
-                                "error": "Request blocked by input guardrail",
-                                "reason": decision.reason,
-                                "thread_id": thread_id,
-                            }
-                        ),
+                    return self._error_response(
+                        "Request blocked by input guardrail",
                         403,
+                        reason=decision.reason,
+                        thread_id=thread_id,
                     )
                 user_message = decision.transformed_text or user_message
 
@@ -385,15 +491,8 @@ class AgentApp:
                 self.record_audit(
                     "agent.chat.failed", identity, thread_id, {"error": str(agent_error)}
                 )
-                return (
-                    jsonify(
-                        {
-                            "error": "Agent invocation failed",
-                            "detail": str(agent_error),
-                            "thread_id": thread_id,
-                        }
-                    ),
-                    500,
+                return self._error_response(
+                    "Agent invocation failed", 500, thread_id=thread_id
                 )
 
             # ── output guardrail ─────────────────────────────────────────────
@@ -410,15 +509,11 @@ class AgentApp:
                     },
                 )
                 if not decision.allowed:
-                    return (
-                        jsonify(
-                            {
-                                "error": "Response blocked by output guardrail",
-                                "reason": decision.reason,
-                                "thread_id": thread_id,
-                            }
-                        ),
+                    return self._error_response(
+                        "Response blocked by output guardrail",
                         403,
+                        reason=decision.reason,
+                        thread_id=thread_id,
                     )
                 agent_response = decision.transformed_text or agent_response
 
@@ -454,6 +549,7 @@ class AgentApp:
             )
 
         @self.app.route("/reset", methods=["POST"])
+        @self._require_csrf_header()
         def reset():
             """Reset the chat history for a specific thread or all threads."""
             try:
@@ -461,7 +557,15 @@ class AgentApp:
                 thread_id = data.get("thread_id")
 
                 if thread_id:
-                    # Reset specific thread
+                    identity_raw = data.get("identity", {})
+                    tenant_id = identity_raw.get("tenant_id", "default")
+                    if not self._check_thread_ownership(
+                        thread_id,
+                        IdentityContext(tenant_id=tenant_id, user_id="admin"),
+                    ):
+                        return self._error_response(
+                            "Thread not found", 404, thread_id=thread_id
+                        )
                     if thread_id in self.chat_histories:
                         self.chat_histories[thread_id] = []
                         logger.info("Reset chat history for thread %s", thread_id)
@@ -473,7 +577,7 @@ class AgentApp:
                         )
                     else:
                         logger.warning(
-                            f"Attempted to reset non-existent thread {thread_id}"
+                            "Attempted to reset non-existent thread %s", thread_id
                         )
                         return jsonify(
                             {
@@ -482,23 +586,14 @@ class AgentApp:
                             }
                         )
                 else:
-                    # Reset all threads
                     self.chat_histories = {}
                     logger.info("Reset all chat histories")
                     return jsonify(
                         {"status": "success", "message": "All chat histories reset"}
                     )
-            except Exception as e:
-                logger.exception(f"Error resetting chat history: {str(e)}")
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": f"Failed to reset chat history: {str(e)}",
-                        }
-                    ),
-                    500,
-                )
+            except Exception:
+                logger.exception("Error resetting chat history")
+                return self._error_response("Failed to reset chat history", 500)
 
         @self.app.route("/threads", methods=["GET"])
         def list_threads():
@@ -508,17 +603,9 @@ class AgentApp:
                 return jsonify(
                     {"status": "success", "threads": threads, "count": len(threads)}
                 )
-            except Exception as e:
-                logger.exception(f"Error listing threads: {str(e)}")
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "message": f"Failed to list threads: {str(e)}",
-                        }
-                    ),
-                    500,
-                )
+            except Exception:
+                logger.exception("Error listing threads")
+                return self._error_response("Failed to list threads", 500)
 
     def run(self, host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
         """Run the Flask application."""

@@ -23,7 +23,7 @@ from langchain_mongodb.retrievers import MongoDBAtlasFullTextSearchRetriever
 from langgraph.prebuilt import create_react_agent
 from pymongo import MongoClient
 
-from agent_builder.utils.logging_config import get_logger
+from agent_builder.utils.logging_config import get_logger, sanitize_connection_string
 
 # Create module-level logger
 logger = get_logger(__name__)
@@ -67,10 +67,13 @@ class MongoDBTools:
 
         try:
             self.client = MongoClient(connection_str, tlsCAFile=certifi.where())
-            self.logger.info("Successfully connected to MongoDB")
+            self.logger.info(
+                "Successfully connected to MongoDB at %s",
+                sanitize_connection_string(connection_str),
+            )
         except Exception as e:
-            self.logger.error(f"Failed to connect to MongoDB: {e}")
-            raise ConnectionError(f"Could not connect to MongoDB: {e}")
+            self.logger.error("Failed to connect to MongoDB: %s", e)
+            raise ConnectionError("Could not connect to MongoDB") from e
 
         self.database_name, self.collection_name = namespace.split(".", 1)
         self.logger.debug(
@@ -124,12 +127,9 @@ class MongoDBTools:
                 {"$project": {"_id": 0}},
                 {"$limit": self.top_k},
             ]
-            self.logger.debug(
-                f"Full-text search pipeline: {json.dumps(pipeline, indent=2)}"
-            )
+            self.logger.debug("Full-text search pipeline built for index: %s", self.index_name)
             results = list(collection.aggregate(pipeline))
-            self.logger.debug(f"Full-text search returned {len(results)} results")
-            self.logger.debug(f"Results: {json.dumps(results, indent=2)}")
+            self.logger.debug("Full-text search returned %d results", len(results))
             documents = [
                 {"source": self.collection_name, "page_content": json.dumps(doc)}
                 for doc in results

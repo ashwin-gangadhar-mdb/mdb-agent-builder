@@ -47,7 +47,7 @@ from agent_builder.core.interfaces import (
     BaseObservationalMemoryAdapter,
 )
 from agent_builder.core.types import utc_now
-from agent_builder.utils.logging_config import get_logger
+from agent_builder.utils.logging_config import get_logger, sanitize_connection_string
 
 logger = get_logger(__name__)
 

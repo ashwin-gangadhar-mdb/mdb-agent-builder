@@ -8,6 +8,9 @@ CONFIG_DIR := config
 LOGS_DIR := logs
 CONFIG_PATH := $(CONFIG_DIR)/agents.yaml
 
+# Container runtime (override on the command line, e.g. make docker-build CONTAINER_RUNTIME=podman)
+CONTAINER_RUNTIME ?= docker
+
 # Server / multi-worker settings (override on the command line, e.g.
 #   make serve-prod GUNICORN_WORKERS=8 PORT=8080
 #   make docker-run GUNICORN_WORKERS=8)
@@ -40,6 +43,8 @@ help:
 	@echo "  make verify          Verify the installation and configuration"
 	@echo "  make reinstall       Reinstall the package after name changes"
 	@echo ""
+	@echo "Container vars (override on the command line):"
+	@echo "  CONTAINER_RUNTIME=$(CONTAINER_RUNTIME)"
 	@echo "Server vars (override on the command line):"
 	@echo "  PORT=$(PORT)  GUNICORN_WORKERS=$(GUNICORN_WORKERS)  GUNICORN_TIMEOUT=$(GUNICORN_TIMEOUT)"
 
@@ -203,9 +208,9 @@ build-package:
 
 # Build the Docker image
 docker-build:
-	@echo "Building Docker image..."
-	docker build -t $(PROJECT_NAME) -f Dockerfile .
-	@echo "Docker image built: $(PROJECT_NAME)"
+	@echo "Building container image with $(CONTAINER_RUNTIME)..."
+	$(CONTAINER_RUNTIME) build -t $(PROJECT_NAME) -f Dockerfile .
+	@echo "Container image built: $(PROJECT_NAME)"
 
 # Run the Docker container
 docker-run:
@@ -214,7 +219,7 @@ docker-run:
 		echo "Warning: .env file not found. Environment variables will not be loaded."; \
 		echo "You may want to copy .env.example to .env and configure it."; \
 	fi
-	docker run -p $(PORT):$(PORT) \
+	$(CONTAINER_RUNTIME) run -p $(PORT):$(PORT) \
 		-v $(PWD)/$(CONFIG_DIR):/app/config \
 		-v $(PWD)/$(LOGS_DIR):/app/logs \
 		-v $(PWD)/prompts:/app/prompts \
@@ -274,7 +279,7 @@ docker-debug:
 	@if [ ! -f .env ]; then \
 		echo "Warning: .env file not found. Environment variables will not be loaded."; \
 	fi
-	docker run -it --rm \
+	$(CONTAINER_RUNTIME) run -it --rm \
 		-p $(PORT):$(PORT) \
 		-v $(PWD)/$(CONFIG_DIR):/app/config \
 		-v $(PWD)/$(LOGS_DIR):/app/logs \

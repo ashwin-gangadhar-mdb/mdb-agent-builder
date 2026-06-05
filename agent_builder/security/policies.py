@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from agent_builder.core.interfaces import BasePolicyAdapter
 from agent_builder.core.types import AccessPolicy, IdentityContext
-from agent_builder.utils.logging_config import get_logger
+from agent_builder.utils.logging_config import get_logger, sanitize_connection_string
 
 logger = get_logger(__name__)
 
@@ -50,6 +50,10 @@ class MongoDBPolicyProvider(BasePolicyAdapter):
         from pymongo import MongoClient
 
         self.client = MongoClient(connection_str, tlsCAFile=certifi.where())
+        logger.info(
+            "MongoDB policy provider initialised — db='%s', collection='%s', conn='%s'",
+            db_name, collection_name, sanitize_connection_string(connection_str),
+        )
         self.collection = self.client[db_name][collection_name]
         self.default_policy = default_policy or {"permissions": ["*"]}
 

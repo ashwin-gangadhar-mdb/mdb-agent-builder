@@ -6,6 +6,7 @@ including React, Reflection, Plan-Execute-Replan, and Long-Term Memory agents.
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, Union
 
 from langchain_core.language_models import BaseLLM
@@ -38,17 +39,20 @@ class AgentConfig:
     checkpointer_config: Optional[Dict[str, Any]] = None
     connection_str: Optional[str] = None
     namespace: Optional[str] = None
-    # ── Memory adapters (adapter-powered path) ──────────────────────────
+    # ------------------------------------------------------------------
+    # Memory adapters (adapter-powered path)
     # When supplied, the long_term_memory agent uses these adapters instead
     # of the legacy hard-coded HuggingFace + MongoDBAtlasVectorSearch path.
     episodic_memory: Optional[BaseEpisodicMemoryAdapter] = None
     observational_memory: Optional[BaseObservationalMemoryAdapter] = None
-    # ── Multi-agent handoffs ─────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Multi-agent handoffs
     # Each entry is a plain agent-name string or a dict with 'name' and an
     # optional 'description' key.  The loader converts these into
     # create_handoff_tool() instances appended to the agent's tool list.
     handoff_targets: List[Any] = field(default_factory=list)
-    # ── Catch-all ───────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Catch-all
     additional_kwargs: Optional[Dict[str, Any]] = None
 
 
@@ -97,6 +101,31 @@ AGENT_CONFIG = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Path-traversal-safe prompt loading
+# ---------------------------------------------------------------------------
+
+_PWD = Path.cwd().resolve()
+
+
+def _safe_prompt_path(user_path: str) -> str:
+    """Resolve *user_path* against CWD and refuse path-traversal attempts.
+
+    Prompts are loaded from paths specified in YAML.  To prevent a
+    compromised configuration from reading arbitrary filesystem paths
+    (e.g. ``../../etc/shadow``), the resolved realpath must stay within
+    the current working directory tree.
+    """
+    resolved = Path(os.path.realpath(os.path.join(_PWD, user_path)))
+    try:
+        resolved.relative_to(_PWD)
+    except ValueError:
+        raise ValueError(
+            f"Prompt path '{user_path}' escapes the working directory"
+        )
+    return str(resolved)
+
+
 def load_agent(config: AgentConfig) -> Any:
     """
     Load an agent based on the provided configuration.
@@ -111,13 +140,15 @@ def load_agent(config: AgentConfig) -> Any:
         ValueError: If the agent type is not supported or required configuration is missing
     """
     agent_type = config.agent_type.lower()
-    logger.info(f"Loading agent of type: {agent_type}, name: {config.name}")
+    logger.info("Loading agent of type: %s, name: %s", agent_type, config.name)
 
     # Check if agent type is supported
     if agent_type not in AGENT_CONFIG:
         available_types = list(AGENT_CONFIG.keys())
         logger.error(
-            f"Unsupported agent type: {agent_type}. Available types: {available_types}"
+            "Unsupported agent type: %s. Available types: %s",
+            agent_type,
+            available_types,
         )
         raise ValueError(
             f"Unsupported agent type: {agent_type}. Available types: {available_types}"
@@ -127,16 +158,17 @@ def load_agent(config: AgentConfig) -> Any:
 
     # Load prompts from files if paths are provided
     def load_prompt_from_file(prompt, path, prompt_type="system"):
-        """Helper function to load prompt from file"""
+        """Helper function to load prompt from file with path-traversal protection."""
         if not prompt and path:
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                safe_path = _safe_prompt_path(path)
+                with open(safe_path, "r", encoding="utf-8") as f:
                     loaded_prompt = f.read()
-                    logger.info(f"Loaded {prompt_type} prompt from: {path}")
+                    logger.info("Loaded %s prompt from: %s", prompt_type, safe_path)
                     return loaded_prompt
             except Exception as e:
                 logger.error(
-                    f"Failed to load {prompt_type} prompt from {path}: {str(e)}"
+                    "Failed to load %s prompt from %s: %s", prompt_type, path, str(e)
                 )
                 raise ValueError(
                     f"Failed to load {prompt_type} prompt from {path}: {str(e)}"
@@ -165,12 +197,12 @@ def load_agent(config: AgentConfig) -> Any:
     # Set up checkpointer if provided
     checkpointer = None
     if config.checkpointer_config:
-        logger.info(f"Setting up checkpointer for agent {config.name}")
+        logger.info("Setting up checkpointer for agent %s", config.name)
         try:
             checkpointer = get_mongodb_checkpointer(**config.checkpointer_config)
         except Exception as e:
             logger.warning(
-                f"Failed to create checkpointer, using in-memory default: {str(e)}"
+                "Failed to create checkpointer, using in-memory default: %s", str(e)
             )
 
     # Get system prompt from file if provided
@@ -236,11 +268,11 @@ def load_agent(config: AgentConfig) -> Any:
             [t.name for t in handoff_tools],
         )
 
-    logger.debug(f"Creating {agent_type} agent with parameters: {agent_kwargs}")
+    logger.debug("Creating %s agent with parameters: %s", agent_type, agent_kwargs)
 
     # Create the agent using AgentFactory
     try:
         return AgentFactory.create_agent(agent_info["agent_type"], **agent_kwargs)
     except Exception as e:
-        logger.error(f"Failed to create agent: {str(e)}")
+        logger.error("Failed to create agent: %s", str(e))
         raise RuntimeError(f"Failed to create agent: {str(e)}")

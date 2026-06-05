@@ -25,29 +25,61 @@ def parse_response_model(response_dict: dict) -> Type[BaseModel]:
     return create_model("ResponseModel", **fields)
 
 
-def resolve_env_variables(data):
+# Whitelist of environment variable name patterns that YAML configs may
+# resolve.  Set YAML_ENV_VAR_ALLOWLIST to a comma-separated list of regex
+# patterns to override.  Default: typical LLM / MongoDB / Grove / AWS vars.
+_YAML_ENV_VAR_ALLOWLIST = [
+    re.compile(r)
+    for r in os.environ.get(
+        "YAML_ENV_VAR_ALLOWLIST",
+        "MONGODB_.*,OPENAI_.*,ANTHROPIC_.*,FIREWORKS_.*,COHERE_.*,"
+        "TOGETHER_.*,VOYAGEAI_.*,AZURE_.*,GROVE_.*,AWS_.*,"
+        "OLLAMA_.*,LOG_LEVEL,FLASK_.*,AGENT_CONFIG_PATH,"
+        "CHECKPOINT_.*,PORT,GUNICORN_.*,PYTHONPATH,LANGCHAIN_.*,"
+        "MAAP_.*,PYTHON.*",
+    ).split(",")
+]
+
+
+def _env_var_allowed(name: str) -> bool:
+    """Return True if *name* matches at least one allowlist pattern."""
+    return any(pattern.fullmatch(name) for pattern in _YAML_ENV_VAR_ALLOWLIST)
+
+
+def resolve_env_variables(data, allowlist_check=True):
     """
     Recursively resolves environment variables in a dictionary or string.
 
-    Handles both ${VAR_NAME} and ${VAR_NAME:-default_value} syntax.
+    Handles both ``${VAR_NAME}`` and ``${VAR_NAME:-default_value}`` syntax.
+
+    When *allowlist_check* is True (the default), only environment variables
+    whose names match the ``YAML_ENV_VAR_ALLOWLIST`` patterns can be resolved.
+    Unknown variables cause a ``ValueError`` so that a compromised YAML file
+    cannot exfiltrate arbitrary secrets from the server's environment.
     """
     if isinstance(data, dict):
-        return {k: resolve_env_variables(v) for k, v in data.items()}
+        return {k: resolve_env_variables(v, allowlist_check) for k, v in data.items()}
     elif isinstance(data, list):
-        return [resolve_env_variables(elem) for elem in data]
+        return [resolve_env_variables(elem, allowlist_check) for elem in data]
     elif isinstance(data, str):
-        # Regex to find ${VAR_NAME} or ${VAR_NAME:-default_value}
         pattern = re.compile(r"\$\{(\w+)(:-([^}]*))?\}")
 
         def replace_match(match):
             var_name = match.group(1)
             default_value = match.group(3)
 
-            # Get the environment variable, or use the default if provided
+            if allowlist_check and not _env_var_allowed(var_name):
+                raise ValueError(
+                    f"Environment variable '{var_name}' is not in the YAML env-var "
+                    f"allowlist.  Add it to YAML_ENV_VAR_ALLOWLIST to permit "
+                    f"resolution from configuration files."
+                )
+
             value = os.environ.get(var_name, default_value)
             if value is None:
                 logger.warning(
-                    f"Environment variable '{var_name}' not set and no default provided."
+                    "Environment variable '%s' not set and no default provided.",
+                    var_name,
                 )
                 raise ValueError(
                     f"Environment variable '{var_name}' not set and no default provided."

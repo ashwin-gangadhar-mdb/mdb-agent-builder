@@ -11,99 +11,270 @@ MAAP Agent Builder enables you to:
 - **Scale across workers** — Gunicorn multi-worker support with MongoDB-backed conversation state and checkpointing
 - **Add long-term memory** — episodic (verbatim) and observational (distilled) memory with MongoDB Atlas Vector Search
 - **Enforce governance** — access policies, prompt injection detection, PII redaction, and audit logging
-- **Integrate any LLM or tool** — pluggable adapters for Anthropic, Bedrock, Fireworks, Cohere, and 10+ other providers
+- **Integrate any LLM or tool** — pluggable adapters for Anthropic, Bedrock, Fireworks, Cohere, Grove, and 10+ other providers
 - **Persist across restarts** — MongoDB checkpointing for durable graph and conversation state
+
+---
+
+## Prerequisites
+
+- **Python 3.10+** (3.11 or 3.12 recommended)
+- **MongoDB** — local (`mongodb://localhost:27017`) or Atlas cluster
+- **An LLM provider** — one of: Anthropic, OpenAI, Bedrock, Fireworks, Cohere, Together, Azure, Ollama, SageMaker, or Grove
+
+---
 
 ## Quick Start
 
+The fastest way to get running:
+
 ```bash
+# 1. Clone and enter the project
 git clone https://github.com/mongodb/maap-agent-builder.git
 cd maap-agent-builder
 
-pip install -e .
+# 2. Create virtual environment and install
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 
-# Configure environment + a config file
-cp .env.example .env             # then edit with your keys
-export MONGODB_URI=mongodb://localhost:27017
-export ANTHROPIC_API_KEY=your_key
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your credentials (LLM API keys, MongoDB URI, etc.)
+# Generate a Flask secret key:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
 
-# Run the dev server (Flask, single process) — good for local development
-agent-builder serve --config config/agents.yaml
+# 4. Create default config and directories
+make create-config
 
-# …or run a production-like multi-worker server with Gunicorn
-make serve-prod GUNICORN_WORKERS=4
+# 5. Run the dev server (Flask, single process)
+make run
+# ...or directly:
+# agent-builder serve --config config/agents.yaml
+
+# 6. Test the health endpoint
+curl http://localhost:5000/health
 ```
 
 Visit `http://localhost:5000/health` and start chatting at `POST /chat`.
 
-> **Dev vs. production:** `agent-builder serve` (and `make run`) start the
-> single-process Flask development server. For multi-worker deployments use
-> Gunicorn via `make serve-prod`, the Docker image, or a direct
-> `gunicorn agent_builder.wsgi:application` invocation. See
-> [Multi-Worker Deployments](#multi-worker-deployments).
+> **Dev vs. production:** `agent-builder serve` (and `make run`) start the single-process Flask development server. For multi-worker deployments use Gunicorn via `make serve-prod`, the Docker image, or a direct `gunicorn agent_builder.wsgi:application` invocation. See [Multi-Worker Deployments](#multi-worker-deployments) below.
 
-## Installation
+---
 
-### From source
+## Full Setup Guide
+
+### Step 1: Clone and install dependencies
 
 ```bash
 git clone https://github.com/mongodb/maap-agent-builder.git
 cd maap-agent-builder
-pip install -e .
 ```
 
-With development dependencies:
+**Option A: Using the Makefile (recommended)**
 
 ```bash
+# Create virtual environment
+make setup-env
+
+# Activate the environment
+source .venv/bin/activate
+
+# Install with dev dependencies (includes linters, formatters, test tools)
+make install
+```
+
+**Option B: Manual**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
 pip install -e ".[dev]"
 ```
 
-### Docker
-
-The bundled Dockerfile runs Gunicorn (multi-worker) via `startup.sh`, exposes
-a `/health` healthcheck, and ships the `examples/` configs at `/app/examples/`.
+### Step 2: Set up environment variables
 
 ```bash
-# Via the Makefile (recommended) — override workers/port as needed
-make docker-build
-make docker-run GUNICORN_WORKERS=8 PORT=5000
+cp .env.example .env
+```
 
-# …or directly
+Edit `.env` with your settings. At minimum you need:
+
+```bash
+# MongoDB (required)
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DATABASE=agent_builder
+
+# At least one LLM provider key (choose the one you use)
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+FIREWORKS_API_KEY=...
+COHERE_API_KEY=...
+TOGETHER_API_KEY=...
+
+# Flask secret key — generate one:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+FLASK_SECRET_KEY=<your-generated-key>
+
+# Server settings
+LOG_LEVEL=INFO
+PORT=5000
+```
+
+For a Grove API gateway setup, also set:
+
+```bash
+GROVE_API_BASE=https://grove.example.com/v1
+GROVE_API_KEY=...
+```
+
+### Step 3: Create configuration
+
+```bash
+make create-config
+```
+
+This creates the `config/`, `logs/`, and `prompts/` directories with a default `config/agents.yaml`. Edit `config/agents.yaml` to configure your LLM, tools, and agent type. See [Configuration](#configuration) for details.
+
+**Validate your config:**
+
+```bash
+make validate-config
+```
+
+### Step 4: Run the application
+
+**Development (single process, Flask dev server):**
+
+```bash
+make run
+# or: agent-builder serve --config config/agents.yaml --port 5000
+```
+
+The server starts at `http://localhost:5000`.
+
+**Production (multi-worker, Gunicorn):**
+
+```bash
+make serve-prod GUNICORN_WORKERS=8 PORT=5000
+# or directly:
+# AGENT_CONFIG_PATH=config/agents.yaml gunicorn --workers 8 --bind 0.0.0.0:5000 agent_builder.wsgi:application
+```
+
+For multi-worker deployments, configure `state:` or `governance:` in your YAML to enable cross-worker session sharing via MongoDB. See [Multi-Worker Deployments](#multi-worker-deployments).
+
+### Step 5: Send a chat request
+
+```bash
+curl -X POST http://localhost:5000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Requested-With: XMLHttpRequest" \
+  -d '{
+    "message": "Hello, what can you help me with?",
+    "config": {
+      "thread_id": "my-first-conversation",
+      "identity": {
+        "tenant_id": "default",
+        "user_id": "dev-user"
+      }
+    }
+  }'
+```
+
+> **Note:** The `X-Requested-With: XMLHttpRequest` header is required for state-changing endpoints (like `/reset`) as a CSRF protection measure. It is recommended on all POST requests.
+
+---
+
+## Docker
+
+The Docker image runs Gunicorn (multi-worker) via `startup.sh`, ships with example configs, and exposes a `/health` healthcheck.
+
+### Building and running
+
+```bash
+# Build the image (defaults to Docker; use CONTAINER_RUNTIME=podman for Podman)
+make docker-build
+make docker-build CONTAINER_RUNTIME=podman   # if you use Podman
+
+# Run the container
+make docker-run PORT=5000 GUNICORN_WORKERS=8
+make docker-run CONTAINER_RUNTIME=podman GUNICORN_WORKERS=8
+
+# Debug mode (interactive shell)
+make docker-debug
+```
+
+`make docker-run` automatically loads your `.env` file if present and mounts your local `config/`, `logs/`, and `prompts/` directories as volumes.
+
+### Direct commands
+
+```bash
+# Build
 docker build -t maap-agent-builder .
-docker run -e MONGODB_URI=... -e ANTHROPIC_API_KEY=... \
-  -e GUNICORN_WORKERS=8 \
-  -p 5000:5000 \
+
+# Run
+docker run -p 5000:5000 \
   -v $(pwd)/config:/app/config \
+  -v $(pwd)/logs:/app/logs \
   -v $(pwd)/prompts:/app/prompts \
+  --env-file .env \
+  -e AGENT_CONFIG_PATH=/app/config/agents.yaml \
+  -e GUNICORN_WORKERS=8 \
   maap-agent-builder
 ```
 
-`make docker-run` auto-loads a `.env` file if present and mounts your local
-`config/`, `logs/`, and `prompts/` directories.
+The `CONTAINER_RUNTIME` Makefile variable also applies to `docker-run` and `docker-debug`. Override it with `make docker-run CONTAINER_RUNTIME=podman` to use Podman instead of Docker across all three targets.
 
-### Using the Makefile
+---
 
-Common workflows are wrapped as `make` targets (run `make help` for the full list):
+## Using the Makefile
+
+Common workflows are wrapped as `make` targets. Run `make help` for the full list.
 
 | Target | Description |
 |--------|-------------|
-| `make setup-env` | Create a virtualenv in `.venv` |
-| `make install` | Install the package with dev extras |
-| `make create-config` | Scaffold `config/` and a sample prompt |
-| `make validate-config` | Validate the config (single- **or** multi-agent) |
-| `make run` / `make serve` | Run the Flask dev server (single process) |
+| `make setup-env` | Create a virtual environment in `.venv` |
+| `make install` | Install the package with dev extras (run inside activated venv) |
+| `make create-config` | Scaffold `config/`, `logs/`, `prompts/` with default `agents.yaml` |
+| `make validate-config` | Validate the YAML configuration |
+| `make create-agent` | Interactive wizard to add a new agent to `agents.yaml` |
+| `make add-tool` | Interactive wizard to add a new tool to `agents.yaml` |
+| `make run` / `make serve` | Run Flask dev server (single process) |
 | `make serve-prod` | Run Gunicorn multi-worker (production-like) |
-| `make docker-build` / `make docker-run` | Build / run the Docker image |
+| `make docker-build` | Build the container image |
+| `make docker-run` | Run the container |
+| `make docker-debug` | Start container in interactive shell mode |
 | `make test` | Run the test suite |
 | `make lint` / `make format` | Lint / format the code |
+| `make clean` | Remove build artifacts and caches |
+| `make verify` | Verify installation and configuration |
 
-Server settings are overridable on any relevant target — `PORT`,
-`GUNICORN_WORKERS`, `GUNICORN_TIMEOUT`, and `CONFIG_PATH`:
+### Overridable variables
+
+All targets that use these variables accept overrides on the command line:
 
 ```bash
-make serve-prod GUNICORN_WORKERS=8 PORT=8080
+# Container runtime (docker or podman) — applies to docker-build, docker-run, docker-debug
+make docker-build CONTAINER_RUNTIME=podman
+
+# Server settings — applies to serve-prod, docker-run, docker-debug
+make serve-prod GUNICORN_WORKERS=8 PORT=8080 GUNICORN_TIMEOUT=180
+make docker-run GUNICORN_WORKERS=8 PORT=8080
+
+# Configuration path — applies to validate-config
 make validate-config CONFIG_PATH=examples/multi_agent_customer_support.yaml
 ```
+
+| Variable | Default | Applies to |
+|----------|---------|------------|
+| `CONTAINER_RUNTIME` | `docker` | `docker-build`, `docker-run`, `docker-debug` |
+| `PORT` | `5000` | `run`, `serve`, `serve-prod`, `docker-run`, `docker-debug` |
+| `GUNICORN_WORKERS` | `4` | `serve-prod`, `docker-run`, `docker-debug` |
+| `GUNICORN_TIMEOUT` | `120` | `serve-prod`, `docker-run`, `docker-debug` |
+| `CONFIG_PATH` | `config/agents.yaml` | `validate-config` (override via `make validate-config CONFIG_PATH=...`) |
+
+---
 
 ## Configuration
 
@@ -121,23 +292,31 @@ llms:            # Language models
   - name: claude-3.5
     provider: bedrock
     model_name: anthropic.claude-3-5-sonnet-20240620-v1:0
+    temperature: 0.7
+    max_tokens: 4096
 
 tools:           # Tools available to agents
   - name: search
     tool_type: vector_search
     namespace: my_db.products
+    connection_str: ${MONGODB_URI}
+    embedding_model: voyage
 
 memory:          # Optional: long-term memory adapters
   - name: recall
     memory_type: episodic
+    namespace: my_db.episodes
     embedding_model: voyage
 
-agent:           # Single-agent mode (existing configs)
+agent:           # Single-agent mode
+  name: my_agent
   agent_type: react
   llm: claude-3.5
   tools: [search]
+  system_prompt_path: ./prompts/rag_system_prompt.txt
 
-agents:          # Multi-agent mode (new)
+# OR for multi-agent mode:
+agents:          # Multi-agent mode (mutually exclusive with agent:)
   - name: triage
     agent_type: react
     llm: claude-3.5
@@ -145,62 +324,113 @@ agents:          # Multi-agent mode (new)
       - name: billing
         description: "Route billing questions here"
 
-checkpointer:    # MongoDB checkpointing (cross-worker state)
+checkpointer:    # MongoDB checkpointing for durable state
   connection_str: ${MONGODB_URI}
+  db_name: agent_state
+  collection_name: checkpoints
 
-state:           # Standalone session state (optional)
+state:           # Standalone session state for multi-worker deployments
+  enabled: true
   connection_str: ${MONGODB_URI}
 
 governance:      # Optional: policies, audit, PII redaction
   enabled: true
   connection_str: ${MONGODB_URI}
+  default_policy:
+    permissions: ["*"]
+  policy:
+    provider: mongodb
+  audit:
+    enabled: true
+  state:
+    enabled: true
 ```
+
+> **Note:** Environment variable names resolved from YAML configs are restricted to an allowlist for security. Variables matching patterns like `MONGODB_.*`, `OPENAI_.*`, `ANTHROPIC_.*`, `GROVE_.*`, `OLLAMA_.*`, etc. are permitted. Customize the list by setting the `YAML_ENV_VAR_ALLOWLIST` environment variable to a comma-separated list of regex patterns.
 
 ### Environment Variables
 
 ```bash
-# Required
+# MongoDB (required)
 MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/?retryWrites=true
-ANTHROPIC_API_KEY=sk-ant-...
+MONGODB_DATABASE=agent_builder
 
-# Optional LLM providers
+# LLM API keys (set the ones you need)
+ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
-BEDROCK_REGION=us-west-2
 FIREWORKS_API_KEY=...
+COHERE_API_KEY=...
+TOGETHER_API_KEY=...
+VOYAGEAI_API_KEY=...
+
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 
 # Grove API gateway (OpenAI-compatible LLM gateway)
 GROVE_API_BASE=https://grove.example.com/v1
 GROVE_API_KEY=...
 
-# Server settings (for multi-worker deployments)
+# Flask / server settings
+FLASK_SECRET_KEY=<generate with: python3 -c "import secrets; print(secrets.token_hex(32))">
+FLASK_ENV=production           # Set in production to enforce FLASK_SECRET_KEY
+AGENT_CONFIG_PATH=config/agents.yaml
+LOG_LEVEL=INFO
+PORT=5000
+
+# Gunicorn (for serve-prod and Docker)
 GUNICORN_WORKERS=4
 GUNICORN_TIMEOUT=120
-PORT=5000
-LOG_LEVEL=INFO
+
+# Checkpointing (optional)
+CHECKPOINT_ENABLED=false
+CHECKPOINT_PROVIDER=mongodb
+CHECKPOINT_URI=${MONGODB_URI}
+CHECKPOINT_DB=${MONGODB_DATABASE}
 ```
 
 ### LLM Providers
 
-Models are declared under `llms:` and referenced by name from agents. Each
-provider has its own adapter; the supported `provider:` values are:
+Models are declared under `llms:` and referenced by name from agents.
 
-| Provider | Notes |
-|----------|-------|
-| `bedrock` | Amazon Bedrock chat models |
-| `anthropic` | Anthropic Claude (`ANTHROPIC_API_KEY`) |
-| `fireworks` | Fireworks AI (`FIREWORKS_API_KEY`) |
-| `together` | Together AI (`TOGETHER_API_KEY`) |
-| `cohere` | Cohere (`COHERE_API_KEY`) |
-| `azure` | Azure OpenAI (`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`) |
-| `ollama` | Local Ollama models |
-| `sagemaker` | AWS SageMaker endpoints |
-| `grove` | **Grove API gateway** (OpenAI-compatible) — see below |
+| Provider | Key / Config | Notes |
+|----------|-------------|-------|
+| `bedrock` | AWS credentials in environment | Amazon Bedrock chat models |
+| `anthropic` | `ANTHROPIC_API_KEY` | Anthropic Claude |
+| `openai` | `OPENAI_API_KEY` | OpenAI GPT models |
+| `fireworks` | `FIREWORKS_API_KEY` | Fireworks AI |
+| `together` | `TOGETHER_API_KEY` | Together AI |
+| `cohere` | `COHERE_API_KEY` | Cohere |
+| `azure` | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` | Azure OpenAI |
+| `ollama` | None (local) | Local Ollama models. Defaults to `http://localhost:11434` |
+| `sagemaker` | `additional_kwargs.endpoint_name` | AWS SageMaker endpoints |
+| `grove` | `GROVE_API_BASE`, `GROVE_API_KEY` | Grove API gateway (OpenAI-compatible) |
+
+#### Example LLM configuration
+
+```yaml
+llms:
+  - name: my-claude
+    provider: anthropic
+    model_name: claude-sonnet-4-20250514
+    temperature: 0.7
+    max_tokens: 4096
+
+  - name: my-gpt
+    provider: openai
+    model_name: gpt-4o
+    temperature: 0.3
+
+  - name: local-llama
+    provider: ollama
+    model_name: llama3
+    additional_kwargs:
+      base_url: http://localhost:11434
+```
 
 #### Grove API Gateway
 
-Grove is an OpenAI-compatible LLM gateway: a single endpoint that fronts one
-or more upstream model providers. Point the `grove` provider at the gateway's
-base URL and the framework can use any model Grove exposes:
+Grove is an OpenAI-compatible LLM gateway that fronts one or more upstream model providers behind a single endpoint.
 
 ```yaml
 llms:
@@ -214,52 +444,55 @@ llms:
       api_key: ${GROVE_API_KEY}
       default_headers:                   # optional extra gateway headers
         x-tenant-id: acme
-
-agent:
-  agent_type: react
-  llm: grove-claude
-  tools: [search]
 ```
 
-Resolution order:
+Resolution order for `base_url`: `additional_kwargs.base_url` → `GROVE_API_BASE` → `GROVE_API_GATEWAY_URL`. Required. Resolution order for `api_key`: `additional_kwargs.api_key` → `GROVE_API_KEY` → a placeholder (for unauthenticated gateways). Any other keys under `additional_kwargs` (e.g. `default_headers`, `organization`, `timeout`) are passed through to the OpenAI-compatible client.
 
-- **base_url** — `additional_kwargs.base_url` → `GROVE_API_BASE` env →
-  `GROVE_API_GATEWAY_URL` env. Required.
-- **api_key** — `additional_kwargs.api_key` → `GROVE_API_KEY` env → a
-  placeholder (for gateways that don't enforce auth).
-
-Any other keys under `additional_kwargs` (e.g. `default_headers`,
-`organization`, `timeout`) are passed straight through to the underlying
-OpenAI-compatible client, so gateway-specific auth headers and options are
-fully supported.
+---
 
 ## Agent Types
 
-### Single-Agent Configuration
+### Available Types
 
-Use the `agent:` key for a single agent:
+| Value | Description |
+|-------|-------------|
+| `react` | ReAct agent — thinks step-by-step using tools in a reasoning loop |
+| `tool_call` | Uses OpenAI-style tool calling (alias for `react`) |
+| `reflect` | Generate-reflect loop that reviews and improves its own answers |
+| `plan_execute_replan` | Creates a plan, executes steps, and replans as needed |
+| `long_term_memory` | Agent with vector store-backed long-term memory |
+
+### Single-Agent Configuration
 
 ```yaml
 agent:
   name: my_agent
-  agent_type: react        # Required: react, tool_call, reflect, plan_execute_replan, long_term_memory
-  llm: claude-3.5          # Reference to an llm defined above
+  agent_type: react              # Required
+  llm: my-llm                    # Reference to an LLM defined above
   system_prompt: |
-    You are a helpful assistant...
-  tools: [search]          # Optional: list of tool names
-  
+    You are a helpful assistant that can search product information.
+  system_prompt_path: ./prompts/rag_system_prompt.txt  # Alternative to system_prompt
+  tools: [search, calculator]    # Optional: list of tool names
+
   # For reflect agents
   reflection_prompt: |
-    Review and improve your previous response...
-
+    Review and improve your previous response for accuracy and clarity.
+  reflection_prompt_path: ./prompts/reflection_prompt.txt
+  
   # For long-term memory agents
-  episodic_memory: my_memory    # Reference to a memory adapter
+  episodic_memory: recall        # Reference to a memory adapter
   observational_memory: analysis
+
+  # For connecting to MongoDB directly (legacy long-term memory)
+  connection_str: ${MONGODB_URI}
+  namespace: my_db.memories
 ```
 
-### Multi-Agent Configuration (NEW)
+> **Security note:** Prompt files are loaded relative to the working directory with path traversal protection. Attempts to escape the working directory (e.g., `../../etc/passwd`) will be rejected.
 
-Use the `agents:` key (plural) to define multiple agents that can hand off to each other:
+### Multi-Agent Configuration
+
+Use the `agents:` key (plural) to define multiple agents that can hand off to each other. Mutually exclusive with the singular `agent:` key.
 
 ```yaml
 agents:
@@ -276,34 +509,37 @@ agents:
   - name: billing_agent
     agent_type: react
     llm: claude-3.5
-    system_prompt: "Handle billing questions."
+    system_prompt: "Handle billing and payment questions."
     tools: [billing_search]
     handoffs:
       - name: triage_agent
+        description: "Return to triage for non-billing questions"
 
   - name: technical_agent
     agent_type: react
     llm: claude-3.5
-    system_prompt: "Handle technical issues."
+    system_prompt: "Handle technical support issues."
     tools: [product_knowledge]
 
-entry_agent: triage_agent  # Which agent receives the first user message
+entry_agent: triage_agent    # Which agent receives the first message (defaults to first in list)
 ```
 
-When an agent calls a handoff tool (e.g., `transfer_to_billing_agent`), execution routes to the target agent in the same conversation thread. Use `examples/multi_agent_customer_support.yaml` as a reference.
+When an agent calls a handoff tool (e.g., `transfer_to_billing_agent`), execution routes to the target agent in the same conversation thread. See `examples/multi_agent_customer_support.yaml` for a complete working example.
+
+---
 
 ## Multi-Worker Deployments
 
 ### Process-Local History (Single Worker)
 
-By default, conversation history is stored in-memory. This works fine for single-worker deployments but doesn't survive process restarts.
+By default, conversation history is stored in-memory within each process. This works for single-worker deployments but does not survive restarts or scale across workers.
 
 ### Cross-Worker Session State
 
-For Gunicorn multi-worker deployments, enable either a standalone `state:` config or full `governance:` config to share conversation history across workers:
+For Gunicorn multi-worker deployments, enable either a standalone `state:` config or the full `governance:` config to share conversation history across workers via MongoDB:
 
 ```yaml
-# Option 1: Standalone state (no governance)
+# Option 1: Standalone state (lightweight, no governance)
 state:
   enabled: true
   connection_str: ${MONGODB_URI}
@@ -316,34 +552,36 @@ governance:
   connection_str: ${MONGODB_URI}
   state:
     enabled: true
+  audit:
+    enabled: true
 ```
+
+When governance is enabled alongside standalone state, governance takes precedence for the state provider.
 
 ### Starting Multiple Workers
 
-Multi-worker serving is handled by **Gunicorn** against the WSGI entrypoint
-`agent_builder.wsgi:application`. `agent-builder serve` is the single-process
-Flask dev server and does **not** read `GUNICORN_WORKERS`.
-
 ```bash
-# Via the Makefile
-make serve-prod GUNICORN_WORKERS=8 GUNICORN_TIMEOUT=120
+# Via the Makefile (recommended)
+make serve-prod GUNICORN_WORKERS=8 GUNICORN_TIMEOUT=120 PORT=5000
 
-# Gunicorn directly (the path used by the Docker image's startup.sh)
+# Gunicorn directly (what the Docker image's startup.sh uses)
 AGENT_CONFIG_PATH=config/agents.yaml \
   gunicorn --workers 8 --timeout 120 --bind 0.0.0.0:5000 \
   agent_builder.wsgi:application
 
 # Via Docker
-docker run -e GUNICORN_WORKERS=8 ... maap-agent-builder
+make docker-run GUNICORN_WORKERS=8 PORT=5000
 ```
 
-The `/health` endpoint responds over HTTP (no cookies or session state), so load balancers can route traffic cleanly. Each worker reads and writes chat history to the same MongoDB collection, so conversation state is consistent across the fleet.
+The `/health` endpoint responds over HTTP without cookies or session state, so load balancers can route traffic cleanly. Each worker reads and writes chat history to the same MongoDB collection, keeping conversation state consistent across the fleet.
+
+---
 
 ## Memory Systems
 
 ### Episodic Memory
 
-Stores verbatim conversation snippets (what was said, when). Useful for recall:
+Stores verbatim conversation snippets (what was said, when, how the user felt). Retrieved by semantic similarity.
 
 ```yaml
 memory:
@@ -351,16 +589,18 @@ memory:
     memory_type: episodic
     connection_str: ${MONGODB_URI}
     namespace: my_db.episodes
-    embedding_model: voyage
+    embedding_model: voyage          # Reference to an embedding model
     index_name: episodic_index
 
 agent:
-  episodic_memory: episode_recall
+  agent_type: long_term_memory
+  llm: claude-3.5
+  episodic_memory: episode_recall    # Reference to the memory adapter
 ```
 
 ### Observational Memory
 
-Uses an LLM to distil raw conversation into structured facts (user preferences, behavioral patterns). Useful for learning:
+Uses an LLM to distil raw conversation into structured facts (user preferences, behavioral patterns, goals). Each observation is stored as a separate vector-search document for granular retrieval.
 
 ```yaml
 memory:
@@ -369,15 +609,36 @@ memory:
     connection_str: ${MONGODB_URI}
     namespace: my_db.observations
     embedding_model: voyage
-    llm: claude-3.5
-    extraction_prompt: |
-      Extract key facts from this conversation: {text}
+    llm: claude-3.5                # LLM used to extract observations
+    index_name: observational_index
+    extraction_prompt: |           # Optional — overrides the default prompt
+      Extract key user facts from this conversation: {text}
 
 agent:
+  agent_type: long_term_memory
+  llm: claude-3.5
   observational_memory: observations
+  episodic_memory: episode_recall   # Can use both together
 ```
 
+---
+
 ## API Endpoints
+
+All endpoints expect `Content-Type: application/json`. State-changing endpoints (`/reset`) require the `X-Requested-With: XMLHttpRequest` header as CSRF protection.
+
+The application enforces a 1 MB request body limit and rate limits the `/chat` endpoint (60 requests per minute per tenant+user by default).
+
+### Health Check
+
+```bash
+curl http://localhost:5000/health
+
+# Response (200):
+# {"status": "healthy", "agent_loaded": true}
+# Response (503 if agent not loaded):
+# {"status": "unhealthy", "agent_loaded": false}
+```
 
 ### Chat
 
@@ -397,7 +658,7 @@ curl -X POST http://localhost:5000/chat \
   }'
 ```
 
-Response:
+**Response (200):**
 
 ```json
 {
@@ -410,25 +671,55 @@ Response:
 }
 ```
 
-### Health Check
+**Error responses:**
 
-```bash
-curl http://localhost:5000/health
+```json
+// 400 — missing message field
+{"error": "Missing required field: message"}
+
+// 403 — blocked by governance guardrail
+{"error": "Request blocked by input guardrail", "reason": "Blocked topic detected: ...", "thread_id": "..."}
+
+// 404 — thread not found or cross-tenant access denied
+{"error": "Thread not found", "thread_id": "..."}
+
+// 415 — wrong content type
+{"error": "Content-Type must be application/json"}
+
+// 429 — rate limit exceeded
+{"error": "Too many requests — rate limit exceeded"}
+
+// 500 — agent invocation failed (no internal details exposed)
+{"error": "Agent invocation failed", "thread_id": "..."}
 ```
 
 ### Reset Conversation
 
 ```bash
+# Reset a specific thread
 curl -X POST http://localhost:5000/reset \
   -H "Content-Type: application/json" \
+  -H "X-Requested-With: XMLHttpRequest" \
   -d '{"thread_id": "user-123-conv-1"}'
+
+# Response:
+# {"status": "success", "message": "Chat history reset for thread user-123-conv-1"}
 ```
+
+Omitting `thread_id` resets all threads (requires the `X-Requested-With` header). Thread ownership is verified against the state provider when available.
 
 ### List Active Threads
 
 ```bash
 curl http://localhost:5000/threads
+
+# Response:
+# {"status": "success", "threads": ["thread-1", "thread-2"], "count": 2}
 ```
+
+> **Note:** Thread listing shows in-process threads only. When using a MongoDB state provider, threads persisted across workers are not reflected in this endpoint's response (it lists process-local threads).
+
+---
 
 ## Governance & Security
 
@@ -437,29 +728,59 @@ curl http://localhost:5000/threads
 Define role-based or tenant-based policies in MongoDB:
 
 ```bash
+# Insert via mongosh
 db.agent_policies.insertOne({
-  "tenant_id": "acme-corp",
-  "role": "support",
-  "permissions": ["tools.call.search", "tools.call.send_email"],
-  "denied_tools": ["delete_user"],
-  "blocked_topics": ["salary", "passwords"],
-  "pii_redaction": true,
-  "prompt_injection_detection": true
+  tenant_id: "acme-corp",
+  role: "support",
+  permissions: ["tools.call.search", "tools.call.send_email"],
+  denied_tools: ["delete_user"],
+  blocked_topics: ["salary", "passwords"],
+  retrieval_filters: { classification: "public" },
+  pii_redaction: true,
+  prompt_injection_detection: true
 })
+```
+
+Enable governance in your YAML config:
+
+```yaml
+governance:
+  enabled: true
+  connection_str: ${MONGODB_URI}
+  db_name: agent_control_plane
+  default_policy:
+    permissions: ["*"]
+  policy:
+    provider: mongodb
+    collection_name: agent_policies
 ```
 
 ### Guardrails
 
 Automatically applied when `governance.enabled: true`:
 
-- **Blocked Topics** — reject requests mentioning restricted words
+- **Blocked Topics** — reject requests mentioning restricted words (case-insensitive)
 - **Prompt Injection Detection** — pattern-match common jailbreak attempts
-- **PII Redaction** — redact emails and phone numbers from input/output
-- **Tool Allowlisting** — only call tools the user's policy permits
+- **PII Redaction** — redact emails and phone numbers from input and output
+- **Tool Access Control** — only call tools the user's policy permits; denied tools are blocked regardless of wildcard permissions
+- **Tenant Isolation** — all data retrieval is scoped by `tenant_id` and `user_id`
+
+### Security Headers
+
+All API responses include the following security headers:
+
+| Header | Value |
+|--------|-------|
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `X-XSS-Protection` | `0` |
+| `Cache-Control` | `no-store` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `X-Permitted-Cross-Domain-Policies` | `none` |
 
 ### Audit Logging
 
-All events are logged to MongoDB (`agent_audit_events` by default):
+All governance events are logged to MongoDB (`agent_audit_events` by default):
 
 ```json
 {
@@ -472,9 +793,14 @@ All events are logged to MongoDB (`agent_audit_events` by default):
     "allowed": true,
     "reason": "",
     "stage": "input_guardrail"
-  }
+  },
+  "created_at": "2026-06-05T12:00:00Z"
 }
 ```
+
+Event types include `guardrail.input`, `guardrail.output`, `agent.chat.completed`, and `agent.chat.failed`.
+
+---
 
 ## Project Structure
 
@@ -511,72 +837,101 @@ agent_builder/
 │   └── policies.py           # Policy providers (static, MongoDB)
 ├── audit/
 │   └── mongodb_audit.py      # Audit event logging
-├── app.py                    # Flask app, /chat /health /reset routes
-├── yaml_loader.py            # YAML config parser
+├── app.py                    # Flask app, /chat /health /reset /threads routes
+├── cli.py                    # CLI entrypoint (agent-builder serve)
+├── wsgi.py                   # Gunicorn WSGI entrypoint
+├── yaml_loader.py            # YAML config parser with env var resolution
 └── utils/
     ├── checkpointer.py       # MongoDB LangGraph checkpointer
-    └── logging_config.py     # Structured logging
+    └── logging_config.py     # Structured logging with connection string sanitization
 ```
+
+---
 
 ## Examples
 
 The `examples/` directory contains ready-to-run configs:
 
-- `react_rag_mongodb.yaml` — Single ReAct agent with vector search
-- `tool_call_mcp_agent.yaml` — Tool-calling agent backed by an MCP server
-- `reflection_quality_reviewer.yaml` — Reflection agent that reviews its own answers
-- `plan_execute_replan_research.yaml` — Planning agent that researches a topic
-- `long_term_memory_assistant.yaml` — Agent with episodic memory that recalls prior conversations
-- `governed_enterprise_support.yaml` — Agent with governance, policies, and audit enabled
-- `multi_agent_customer_support.yaml` — 3-agent triage system with bidirectional handoffs
+| File | Description |
+|------|-------------|
+| `react_rag_mongodb.yaml` | Single ReAct agent with vector search |
+| `tool_call_mcp_agent.yaml` | Tool-calling agent backed by an MCP server |
+| `reflection_quality_reviewer.yaml` | Reflection agent that reviews its own answers |
+| `plan_execute_replan_research.yaml` | Planning agent that researches a topic |
+| `long_term_memory_assistant.yaml` | Agent with episodic memory that recalls prior conversations |
+| `governed_enterprise_support.yaml` | Agent with governance, policies, and audit enabled |
+| `multi_agent_customer_support.yaml` | 3-agent triage system with bidirectional handoffs |
 
-Run any of them:
+Run any example:
 
 ```bash
-agent-builder serve --config examples/multi_agent_customer_support.yaml
+# Copy the example to config/
+cp examples/multi_agent_customer_support.yaml config/agents.yaml
+
+# Edit to point to your LLM and MongoDB
+# Then run:
+agent-builder serve --config config/agents.yaml
+# or:
+make run
 ```
+
+---
 
 ## Testing
 
 ```bash
+# Install dev dependencies (if not already)
 pip install -e ".[dev]"
 
-# Unit tests (no services required)
+# Run all tests
 pytest tests/ -v
 
-# Specific test file
+# Run a specific test file
 pytest tests/test_multi_agent.py -v
 
-# With coverage
-pytest tests/ --cov=agent_builder
+# Run with coverage
+pytest tests/ --cov=agent_builder --cov-report=html
+
+# Via Makefile
+make test
 ```
+
+---
 
 ## Development
 
 ```bash
 # Format code
-black agent_builder tests
+make format
+# or: black agent_builder tests && isort agent_builder tests
 
 # Lint
-flake8 agent_builder tests
-mypy agent_builder
+make lint
+# or: flake8 agent_builder && ruff check agent_builder
 
-# Type check with mypy
+# Type check
 mypy agent_builder --ignore-missing-imports
+
+# Security scanning
+bandit -r agent_builder/
 ```
+
+---
 
 ## License
 
-Licensed under the Apache License 2.0. See LICENSE file for details.
+Licensed under the Apache License 2.0. See the LICENSE file for details.
+
+---
 
 ## Contributing
 
-Contributions are welcome! Please:
+Contributions are welcome. Please:
 
 1. Fork the repository
 2. Create a feature branch
 3. Add tests for new functionality
-4. Ensure all tests pass and code is formatted
+4. Ensure all tests pass and code is formatted (`make test && make lint`)
 5. Submit a pull request with a clear description
 
-For questions or issues, open a GitHub issue or check the examples directory for working configs.
+For questions or issues, open a GitHub issue or check the `examples/` directory for working configs.

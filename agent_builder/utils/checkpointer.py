@@ -8,7 +8,7 @@ from typing import Any
 
 from pymongo import MongoClient
 
-from agent_builder.utils.logging_config import get_logger
+from agent_builder.utils.logging_config import get_logger, sanitize_connection_string
 
 # Set up module logger
 logger = get_logger(__name__)
@@ -52,12 +52,15 @@ def get_mongodb_checkpointer(
             "MongoDBSaver not available. Install langgraph with extras: pip install langgraph[mongodb]"
         )
 
-    logger.info(f"Creating MongoDB checkpointer {name} for {db_name}.{collection_name}")
+    logger.info(
+        "Creating MongoDB checkpointer %s for %s.%s (conn=%s)",
+        name, db_name, collection_name, sanitize_connection_string(connection_str),
+    )
 
     try:
         client = MongoClient(connection_str)
         db = client[db_name]
         return MongoDBSaver(db, collection_name, name=name)
     except Exception as e:
-        logger.error(f"Failed to create MongoDB checkpointer: {str(e)}")
-        raise ValueError(f"Failed to create MongoDB checkpointer: {str(e)}")
+        logger.error("Failed to create MongoDB checkpointer: %s", str(e))
+        raise ValueError("Failed to create MongoDB checkpointer") from e

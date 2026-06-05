@@ -10,6 +10,9 @@ from typing import Any, Dict, Optional
 
 from agent_builder.core.interfaces import BaseAuditAdapter
 from agent_builder.core.types import AuditEvent, utc_now
+from agent_builder.utils.logging_config import get_logger, sanitize_connection_string
+
+logger = get_logger(__name__)
 
 
 class MongoDBAuditProvider(BaseAuditAdapter):
@@ -30,6 +33,10 @@ class MongoDBAuditProvider(BaseAuditAdapter):
         from pymongo import MongoClient
 
         self.client = MongoClient(connection_str, tlsCAFile=certifi.where())
+        logger.info(
+            "MongoDB audit provider initialised — db='%s', collection='%s', conn='%s'",
+            db_name, collection_name, sanitize_connection_string(connection_str),
+        )
         self.collection = self.client[db_name][collection_name]
 
     def record(self, event: AuditEvent) -> None:

@@ -10,6 +10,9 @@ from typing import Any, Dict, Optional
 
 from agent_builder.core.interfaces import BaseStateAdapter
 from agent_builder.core.types import utc_now
+from agent_builder.utils.logging_config import get_logger, sanitize_connection_string
+
+logger = get_logger(__name__)
 
 
 class MongoDBStateProvider(BaseStateAdapter):
@@ -30,6 +33,10 @@ class MongoDBStateProvider(BaseStateAdapter):
         from pymongo import MongoClient
 
         self.client = MongoClient(connection_str, tlsCAFile=certifi.where())
+        logger.info(
+            "MongoDB state provider initialised — db='%s', collection='%s', conn='%s'",
+            db_name, collection_name, sanitize_connection_string(connection_str),
+        )
         self.collection = self.client[db_name][collection_name]
 
     def load_thread(self, thread_id: str) -> Optional[Dict[str, Any]]:

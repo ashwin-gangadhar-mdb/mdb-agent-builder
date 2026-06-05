@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -264,3 +265,14 @@ def get_context_logger(name: str) -> ContextLogger:
         A context-aware logger instance
     """
     return ContextLogger(get_logger(name))
+
+
+def sanitize_connection_string(conn_str: str) -> str:
+    """Return a safe-for-logging version of a MongoDB connection string.
+
+    Strips credentials and replaces them with ``***`` so the URI can
+    still be identified (host / database) without exposing secrets.
+    """
+    return re.sub(
+        r"://([^:]+):([^@]+)@", r"://\1:***@", str(conn_str)
+    )
