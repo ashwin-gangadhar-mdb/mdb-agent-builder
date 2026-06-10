@@ -5,6 +5,7 @@ This module provides the main web application for the MAAP Agent Builder,
 handling agent initialization, request routing, and chat history management.
 """
 
+import hmac
 import os
 import secrets
 import time
@@ -215,6 +216,22 @@ class AgentApp:
             return True
         return doc.get("tenant_id", "default") == identity.tenant_id
 
+    @staticmethod
+    def _check_admin_token() -> bool:
+        """Return True if the request carries a valid admin token.
+
+        Administrative operations (listing all threads, resetting all
+        histories) require the ``X-Admin-Token`` header to match the
+        ``MAAP_ADMIN_TOKEN`` environment variable.  When the variable is
+        not set, admin operations are disabled entirely — there is no
+        default credential.
+        """
+        expected = os.environ.get("MAAP_ADMIN_TOKEN")
+        if not expected:
+            return False
+        provided = request.headers.get("X-Admin-Token", "")
+        return hmac.compare_digest(provided, expected)
+
     def _require_csrf_header(self):
         """Decorator that requires ``X-Requested-With: XMLHttpRequest``.
 
@@ -270,6 +287,15 @@ class AgentApp:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
             response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+            # JSON API — forbid any active content if a response is ever
+            # rendered in a browser context.
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'none'; frame-ancestors 'none'"
+            )
+            if request.is_secure:
+                response.headers["Strict-Transport-Security"] = (
+                    "max-age=31536000; includeSubDomains"
+                )
             return response
 
     def record_audit(
@@ -439,7 +465,11 @@ class AgentApp:
             thread_id = request_config.get("thread_id") or str(uuid.uuid4())
 
             # ── rate limit ────────────────────────────────────────────────────
-            rate_key = f"chat:{identity.tenant_id}:{identity.user_id}"
+            # Keyed on the source address *and* the asserted identity: identity
+            # alone is client-controlled and could be rotated to bypass limits.
+            rate_key = (
+                f"chat:{request.remote_addr}:{identity.tenant_id}:{identity.user_id}"
+            )
             if not self._check_rate_limit(rate_key, max_requests=60, window_secs=60):
                 return self._error_response("Too many requests — rate limit exceeded", 429)
 
@@ -472,9 +502,11 @@ class AgentApp:
                     )
                 user_message = decision.transformed_text or user_message
 
+            # Log metadata only — message content may contain PII and must
+            # not reach the logs (redaction only runs when governance is on).
             logger.info(
-                "Received chat request: %s... for thread %s",
-                user_message[:50],
+                "Received chat request (%d chars) for thread %s",
+                len(user_message),
                 thread_id,
             )
 
@@ -552,52 +584,81 @@ class AgentApp:
         @self._require_csrf_header()
         def reset():
             """Reset the chat history for a specific thread or all threads."""
+            rate_key = f"reset:{request.remote_addr}"
+            if not self._check_rate_limit(rate_key, max_requests=30, window_secs=60):
+                return self._error_response(
+                    "Too many requests — rate limit exceeded", 429
+                )
             try:
-                data = request.json or {}
+                data = request.get_json(silent=True) or {}
                 thread_id = data.get("thread_id")
 
-                if thread_id:
-                    identity_raw = data.get("identity", {})
-                    tenant_id = identity_raw.get("tenant_id", "default")
-                    if not self._check_thread_ownership(
-                        thread_id,
-                        IdentityContext(tenant_id=tenant_id, user_id="admin"),
-                    ):
+                if not thread_id:
+                    # Wiping every thread is an administrative operation — it
+                    # must never be reachable by an anonymous caller.
+                    if not self._check_admin_token():
                         return self._error_response(
-                            "Thread not found", 404, thread_id=thread_id
+                            "Global reset requires a valid X-Admin-Token header",
+                            403,
                         )
-                    if thread_id in self.chat_histories:
-                        self.chat_histories[thread_id] = []
-                        logger.info("Reset chat history for thread %s", thread_id)
-                        return jsonify(
-                            {
-                                "status": "success",
-                                "message": f"Chat history reset for thread {thread_id}",
-                            }
-                        )
-                    else:
-                        logger.warning(
-                            "Attempted to reset non-existent thread %s", thread_id
-                        )
-                        return jsonify(
-                            {
-                                "status": "warning",
-                                "message": f"Thread {thread_id} not found",
-                            }
-                        )
-                else:
                     self.chat_histories = {}
-                    logger.info("Reset all chat histories")
+                    logger.info("Reset all chat histories (admin)")
                     return jsonify(
                         {"status": "success", "message": "All chat histories reset"}
                     )
+
+                identity = IdentityContext.from_config(data)
+                if not self._check_thread_ownership(thread_id, identity):
+                    return self._error_response(
+                        "Thread not found", 404, thread_id=thread_id
+                    )
+
+                found = self.chat_histories.pop(thread_id, None) is not None
+                # Also clear the durable copy — otherwise the history is
+                # silently restored from MongoDB on the next request.
+                if self.state_provider:
+                    try:
+                        self.state_provider.save_thread(
+                            thread_id,
+                            {"history": []},
+                            tenant_id=identity.tenant_id,
+                            user_id=identity.user_id,
+                        )
+                        found = True
+                    except Exception:  # pylint: disable=broad-except
+                        logger.warning(
+                            "Failed to clear thread state in provider for %s",
+                            thread_id,
+                        )
+
+                if found:
+                    logger.info("Reset chat history for thread %s", thread_id)
+                    return jsonify(
+                        {
+                            "status": "success",
+                            "message": f"Chat history reset for thread {thread_id}",
+                        }
+                    )
+                logger.warning("Attempted to reset non-existent thread %s", thread_id)
+                return jsonify(
+                    {
+                        "status": "warning",
+                        "message": f"Thread {thread_id} not found",
+                    }
+                )
             except Exception:
                 logger.exception("Error resetting chat history")
                 return self._error_response("Failed to reset chat history", 500)
 
         @self.app.route("/threads", methods=["GET"])
         def list_threads():
-            """List all active thread IDs."""
+            """List all active thread IDs (admin only).
+
+            Thread IDs act as capability tokens for conversation history, so
+            enumerating them must not be possible for anonymous callers.
+            """
+            if not self._check_admin_token():
+                return self._error_response("Not found", 404)
             try:
                 threads = list(self.chat_histories.keys())
                 return jsonify(
@@ -607,8 +668,17 @@ class AgentApp:
                 logger.exception("Error listing threads")
                 return self._error_response("Failed to list threads", 500)
 
-    def run(self, host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
-        """Run the Flask application."""
+    def run(self, host: str = "127.0.0.1", port: int = 5000, debug: bool = False):
+        """Run the Flask development server.
+
+        Binds to localhost by default; pass ``host="0.0.0.0"`` explicitly to
+        expose the dev server on the network.  Production deployments should
+        use gunicorn (see ``startup.sh``).
+        """
+        if debug and os.environ.get("FLASK_ENV") == "production":
+            # The Werkzeug debugger allows arbitrary code execution from the
+            # browser — never allow it in production.
+            raise ValueError("Debug mode must not be enabled in production")
         logger.info("Starting agent server on %s:%s", host, port)
         self.app.run(host=host, port=port, debug=debug)
 
@@ -637,7 +707,10 @@ if __name__ == "__main__":
         "--config", "-c", required=True, help="Path to the YAML configuration file"
     )
     parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to run the server on (default: 0.0.0.0)"
+        "--host",
+        default="127.0.0.1",
+        help="Host to run the server on (default: 127.0.0.1; "
+        "use 0.0.0.0 to expose on the network)",
     )
     parser.add_argument(
         "--port",

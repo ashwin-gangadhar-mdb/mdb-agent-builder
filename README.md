@@ -58,7 +58,7 @@ curl http://localhost:5000/health
 
 Visit `http://localhost:5000/health` and start chatting at `POST /chat`.
 
-> **Dev vs. production:** `agent-builder serve` (and `make run`) start the single-process Flask development server. For multi-worker deployments use Gunicorn via `make serve-prod`, the Docker image, or a direct `gunicorn agent_builder.wsgi:application` invocation. See [Multi-Worker Deployments](#multi-worker-deployments) below.
+> **Dev vs. production:** `agent-builder serve` (and `make run`) start the single-process Flask development server, bound to `127.0.0.1` by default (pass `--host 0.0.0.0` to expose it on the network). For multi-worker deployments use Gunicorn via `make serve-prod`, the Docker image, or a direct `gunicorn agent_builder.wsgi:application` invocation. See [Multi-Worker Deployments](#multi-worker-deployments) below.
 
 ---
 
@@ -116,6 +116,10 @@ TOGETHER_API_KEY=...
 # Flask secret key — generate one:
 #   python3 -c "import secrets; print(secrets.token_hex(32))"
 FLASK_SECRET_KEY=<your-generated-key>
+
+# Admin token — required for admin endpoints (GET /threads, global POST /reset).
+# Leave unset to disable admin operations entirely. Generate like the secret key.
+MAAP_ADMIN_TOKEN=<your-generated-token>
 
 # Server settings
 LOG_LEVEL=INFO
@@ -373,7 +377,8 @@ GROVE_API_KEY=...
 
 # Flask / server settings
 FLASK_SECRET_KEY=<generate with: python3 -c "import secrets; print(secrets.token_hex(32))">
-FLASK_ENV=production           # Set in production to enforce FLASK_SECRET_KEY
+FLASK_ENV=production           # Set in production to enforce FLASK_SECRET_KEY and block debug mode
+MAAP_ADMIN_TOKEN=<token>       # Required for GET /threads and global POST /reset; unset = admin ops disabled
 AGENT_CONFIG_PATH=config/agents.yaml
 LOG_LEVEL=INFO
 PORT=5000
@@ -625,9 +630,9 @@ agent:
 
 ## API Endpoints
 
-All endpoints expect `Content-Type: application/json`. State-changing endpoints (`/reset`) require the `X-Requested-With: XMLHttpRequest` header as CSRF protection.
+All endpoints expect `Content-Type: application/json`. State-changing endpoints (`/reset`) require the `X-Requested-With: XMLHttpRequest` header as CSRF protection. Administrative operations (`GET /threads`, global `POST /reset`) additionally require the `X-Admin-Token` header to match the `MAAP_ADMIN_TOKEN` environment variable — when that variable is unset, they are disabled.
 
-The application enforces a 1 MB request body limit and rate limits the `/chat` endpoint (60 requests per minute per tenant+user by default).
+The application enforces a 1 MB request body limit and rate limits `/chat` (60 requests/minute) and `/reset` (30 requests/minute). Rate-limit buckets are keyed on the source IP address plus the asserted tenant and user, so rotating identities does not bypass the limit.
 
 ### Health Check
 
@@ -706,12 +711,26 @@ curl -X POST http://localhost:5000/reset \
 # {"status": "success", "message": "Chat history reset for thread user-123-conv-1"}
 ```
 
-Omitting `thread_id` resets all threads (requires the `X-Requested-With` header). Thread ownership is verified against the state provider when available.
+Thread ownership is verified against the state provider when available, and the durable copy of the history is cleared as well as the in-process copy.
 
-### List Active Threads
+Omitting `thread_id` resets **all** threads — this is an administrative operation that additionally requires the `X-Admin-Token` header to match the `MAAP_ADMIN_TOKEN` environment variable:
 
 ```bash
-curl http://localhost:5000/threads
+curl -X POST http://localhost:5000/reset \
+  -H "Content-Type: application/json" \
+  -H "X-Requested-With: XMLHttpRequest" \
+  -H "X-Admin-Token: $MAAP_ADMIN_TOKEN" \
+  -d '{}'
+```
+
+If `MAAP_ADMIN_TOKEN` is not set, global reset (and the `/threads` endpoint below) are disabled entirely.
+
+### List Active Threads (admin)
+
+Thread IDs grant access to conversation history, so listing them requires the admin token:
+
+```bash
+curl http://localhost:5000/threads -H "X-Admin-Token: $MAAP_ADMIN_TOKEN"
 
 # Response:
 # {"status": "success", "threads": ["thread-1", "thread-2"], "count": 2}
@@ -777,6 +796,19 @@ All API responses include the following security headers:
 | `Cache-Control` | `no-store` |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` |
 | `X-Permitted-Cross-Domain-Policies` | `none` |
+| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` (HTTPS responses only) |
+
+### Server Hardening Defaults
+
+- **Localhost bind by default** — `agent-builder serve` and the Flask dev server bind `127.0.0.1`; exposing on the network requires an explicit `--host 0.0.0.0`. Gunicorn/Docker deployments bind `0.0.0.0` explicitly in `startup.sh`.
+- **Debug mode blocked in production** — `AgentApp.run(debug=True)` raises when `FLASK_ENV=production` (the Werkzeug debugger allows arbitrary code execution from the browser).
+- **Admin operations are opt-in** — `GET /threads` and global `POST /reset` require `X-Admin-Token` matching `MAAP_ADMIN_TOKEN` (constant-time comparison). With no token configured, they are disabled — there is no default credential.
+- **No message content in logs** — `/chat` logs message length and thread ID only, so PII never reaches the logs even when governance redaction is off.
+- **YAML env-var allowlist** — `${VAR}` references in YAML configs resolve only variables matching `YAML_ENV_VAR_ALLOWLIST` patterns, so a tampered config cannot exfiltrate arbitrary server secrets.
+- **Sanitized connection strings** — MongoDB URIs are credential-masked before logging.
+
+> **Deployment note:** the API has no built-in end-user authentication — `tenant_id`/`user_id` are asserted by the client. Deploy behind a trusted gateway or reverse proxy that authenticates callers and injects identity; do not expose the service directly to untrusted clients. If you use the `nl_to_mql` tool, scope the MongoDB user it connects with to read-only access on the intended database.
 
 ### Audit Logging
 

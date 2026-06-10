@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from flask import Flask
@@ -163,6 +164,105 @@ class RunConfigHelperTests(unittest.TestCase):
         self.app._store_history("c", [("u", "x")])  # exceeds cap -> evict oldest
         self.assertNotIn("a", self.app.chat_histories)
         self.assertEqual(set(self.app.chat_histories), {"b", "c"})
+
+
+class AdminEndpointTests(unittest.TestCase):
+    """Security regression tests for the admin-gated endpoints."""
+
+    def setUp(self):
+        self.app = _make_app(_FakeAgent())
+        self.client = self.app.app.test_client()
+
+    def tearDown(self):
+        os.environ.pop("MAAP_ADMIN_TOKEN", None)
+
+    def test_threads_requires_admin_token(self):
+        # No token configured -> endpoint behaves as if it does not exist.
+        resp = self.client.get("/threads")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_threads_rejects_wrong_token(self):
+        os.environ["MAAP_ADMIN_TOKEN"] = "correct-token"
+        resp = self.client.get("/threads", headers={"X-Admin-Token": "wrong"})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_threads_allows_valid_token(self):
+        os.environ["MAAP_ADMIN_TOKEN"] = "correct-token"
+        self.app.chat_histories["t1"] = []
+        resp = self.client.get("/threads", headers={"X-Admin-Token": "correct-token"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["threads"], ["t1"])
+
+    def test_global_reset_requires_admin_token(self):
+        self.app.chat_histories["t1"] = [("user", "hi")]
+        resp = self.client.post(
+            "/reset", json={}, headers={"X-Requested-With": "XMLHttpRequest"}
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("t1", self.app.chat_histories)
+
+    def test_global_reset_with_admin_token(self):
+        os.environ["MAAP_ADMIN_TOKEN"] = "correct-token"
+        self.app.chat_histories["t1"] = [("user", "hi")]
+        resp = self.client.post(
+            "/reset",
+            json={},
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "X-Admin-Token": "correct-token",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.app.chat_histories, {})
+
+    def test_per_thread_reset_does_not_require_admin_token(self):
+        self.app.chat_histories["t1"] = [("user", "hi")]
+        resp = self.client.post(
+            "/reset",
+            json={"thread_id": "t1"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("t1", self.app.chat_histories)
+
+    def test_per_thread_reset_clears_state_provider(self):
+        class _FakeStateProvider:
+            def __init__(self):
+                self.saved = None
+                self.doc = {"tenant_id": "default", "state": {"history": [("u", "x")]}}
+
+            def load_thread(self, thread_id):
+                return self.doc
+
+            def save_thread(self, thread_id, state, tenant_id="default", user_id="anonymous"):
+                self.saved = (thread_id, state, tenant_id)
+                return state
+
+        provider = _FakeStateProvider()
+        self.app.state_provider = provider
+        resp = self.client.post(
+            "/reset",
+            json={"thread_id": "t1"},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(provider.saved, ("t1", {"history": []}, "default"))
+
+    def test_per_thread_reset_rejects_cross_tenant(self):
+        class _FakeStateProvider:
+            def load_thread(self, thread_id):
+                return {"tenant_id": "other-tenant", "state": {}}
+
+            def save_thread(self, *args, **kwargs):
+                raise AssertionError("must not save for foreign tenant")
+
+        self.app.state_provider = _FakeStateProvider()
+        resp = self.client.post(
+            "/reset",
+            json={"thread_id": "t1", "identity": {"tenant_id": "default"}},
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+        self.assertEqual(resp.status_code, 404)
 
 
 if __name__ == "__main__":

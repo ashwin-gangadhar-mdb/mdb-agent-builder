@@ -29,7 +29,10 @@ def main():
         "--config", "-c", required=True, help="Path to the YAML configuration file"
     )
     server_parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to run the server on (default: 0.0.0.0)"
+        "--host",
+        default="127.0.0.1",
+        help="Host to run the server on (default: 127.0.0.1; "
+        "use 0.0.0.0 to expose on the network)",
     )
     server_parser.add_argument(
         "--port",
