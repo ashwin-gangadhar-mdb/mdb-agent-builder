@@ -24,7 +24,7 @@ WORKERS=${GUNICORN_WORKERS:-4}
 TIMEOUT=${GUNICORN_TIMEOUT:-120}
 PORT=${PORT:-5000}
 
-echo "Starting MAAP Agent Builder with ${WORKERS} worker(s) on port ${PORT}..."
+echo "Starting MDB Agent Builder with ${WORKERS} worker(s) on port ${PORT}..."
 exec gunicorn \
     --workers "${WORKERS}" \
     --bind "0.0.0.0:${PORT}" \

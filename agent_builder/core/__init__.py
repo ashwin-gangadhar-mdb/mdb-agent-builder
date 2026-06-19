@@ -1,1 +1,1 @@
-"""Core framework-neutral contracts for MAAP Agent Builder."""
+"""Core framework-neutral contracts for MDB Agent Builder."""

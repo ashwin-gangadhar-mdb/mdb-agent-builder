@@ -36,7 +36,7 @@ _YAML_ENV_VAR_ALLOWLIST = [
         "TOGETHER_.*,VOYAGEAI_.*,AZURE_.*,GROVE_.*,AWS_.*,"
         "OLLAMA_.*,LOG_LEVEL,FLASK_.*,AGENT_CONFIG_PATH,"
         "CHECKPOINT_.*,PORT,GUNICORN_.*,PYTHONPATH,LANGCHAIN_.*,"
-        "MAAP_.*,PYTHON.*",
+        "MDB_.*,PYTHON.*",
     ).split(",")
 ]
 

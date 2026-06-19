@@ -1,7 +1,7 @@
 """
-Flask application for MAAP Agent Builder.
+Flask application for MDB Agent Builder.
 
-This module provides the main web application for the MAAP Agent Builder,
+This module provides the main web application for the MDB Agent Builder,
 handling agent initialization, request routing, and chat history management.
 """
 
@@ -222,11 +222,11 @@ class AgentApp:
 
         Administrative operations (listing all threads, resetting all
         histories) require the ``X-Admin-Token`` header to match the
-        ``MAAP_ADMIN_TOKEN`` environment variable.  When the variable is
+        ``MDB_ADMIN_TOKEN`` environment variable.  When the variable is
         not set, admin operations are disabled entirely — there is no
         default credential.
         """
-        expected = os.environ.get("MAAP_ADMIN_TOKEN")
+        expected = os.environ.get("MDB_ADMIN_TOKEN")
         if not expected:
             return False
         provided = request.headers.get("X-Admin-Token", "")
@@ -701,7 +701,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run the MAAP Agent Builder Flask application"
+        description="Run the MDB Agent Builder Flask application"
     )
     parser.add_argument(
         "--config", "-c", required=True, help="Path to the YAML configuration file"

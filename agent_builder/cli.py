@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Command Line Interface for MAAP Agent Builder.
+Command Line Interface for MDB Agent Builder.
 
-This module provides a command-line interface to the MAAP Agent Builder,
+This module provides a command-line interface to the MDB Agent Builder,
 allowing users to start the server with configuration options.
 """
 
@@ -17,9 +17,9 @@ logger = get_logger(__name__)
 
 
 def main():
-    """Main entry point for the MAAP Agent Builder CLI."""
+    """Main entry point for the MDB Agent Builder CLI."""
     parser = argparse.ArgumentParser(
-        description="MAAP Agent Builder Command Line Interface"
+        description="MDB Agent Builder Command Line Interface"
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 

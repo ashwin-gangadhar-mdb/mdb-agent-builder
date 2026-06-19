@@ -17,7 +17,7 @@ tools:
     tool_type: vector_search
     description: Retrieve semantically relevant knowledge-base documents.
     connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-    namespace: maap_examples.knowledge_base
+    namespace: mdb_examples.knowledge_base
     embedding_model: local_embeddings
     additional_kwargs:
       index_name: vector_index
@@ -29,7 +29,7 @@ tools:
     tool_type: full_text_search
     description: Retrieve keyword matches from the knowledge base.
     connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-    namespace: maap_examples.knowledge_base
+    namespace: mdb_examples.knowledge_base
     additional_kwargs:
       index_name: full_text_index
       text_field: text
@@ -37,7 +37,7 @@ tools:
 
 checkpointer:
   connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-  db_name: maap_examples_state
+  db_name: mdb_examples_state
   collection_name: rag_checkpoints
   name: rag_checkpointer
 

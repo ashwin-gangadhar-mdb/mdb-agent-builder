@@ -1,5 +1,5 @@
 #!/bin/bash
-# verify_installation.sh - Script to verify the installation and configuration of MAAP Agent Builder
+# verify_installation.sh - Script to verify the installation and configuration of MDB Agent Builder
 
 # Color codes for output
 GREEN='\033[0;32m'
@@ -7,7 +7,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo "===== MAAP Agent Builder Installation Verification ====="
+echo "===== MDB Agent Builder Installation Verification ====="
 echo
 
 # Check for Python installation

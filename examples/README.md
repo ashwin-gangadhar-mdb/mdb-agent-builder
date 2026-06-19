@@ -1,4 +1,4 @@
-# MAAP Agent Builder Examples
+# MDB Agent Builder Examples
 
 These examples show supported agentic app patterns using YAML only. They are designed to be parsed and validated without external credentials. Running them requires the configured model, MongoDB, MCP, and LangChain dependencies.
 

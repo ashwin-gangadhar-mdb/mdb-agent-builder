@@ -174,7 +174,7 @@ class AdminEndpointTests(unittest.TestCase):
         self.client = self.app.app.test_client()
 
     def tearDown(self):
-        os.environ.pop("MAAP_ADMIN_TOKEN", None)
+        os.environ.pop("MDB_ADMIN_TOKEN", None)
 
     def test_threads_requires_admin_token(self):
         # No token configured -> endpoint behaves as if it does not exist.
@@ -182,12 +182,12 @@ class AdminEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_threads_rejects_wrong_token(self):
-        os.environ["MAAP_ADMIN_TOKEN"] = "correct-token"
+        os.environ["MDB_ADMIN_TOKEN"] = "correct-token"
         resp = self.client.get("/threads", headers={"X-Admin-Token": "wrong"})
         self.assertEqual(resp.status_code, 404)
 
     def test_threads_allows_valid_token(self):
-        os.environ["MAAP_ADMIN_TOKEN"] = "correct-token"
+        os.environ["MDB_ADMIN_TOKEN"] = "correct-token"
         self.app.chat_histories["t1"] = []
         resp = self.client.get("/threads", headers={"X-Admin-Token": "correct-token"})
         self.assertEqual(resp.status_code, 200)
@@ -202,7 +202,7 @@ class AdminEndpointTests(unittest.TestCase):
         self.assertIn("t1", self.app.chat_histories)
 
     def test_global_reset_with_admin_token(self):
-        os.environ["MAAP_ADMIN_TOKEN"] = "correct-token"
+        os.environ["MDB_ADMIN_TOKEN"] = "correct-token"
         self.app.chat_histories["t1"] = [("user", "hi")]
         resp = self.client.post(
             "/reset",

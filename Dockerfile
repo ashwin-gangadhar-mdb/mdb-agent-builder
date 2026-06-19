@@ -67,6 +67,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 CMD ["/app/startup.sh"]
 
 # Add metadata labels
-LABEL org.opencontainers.image.source="https://github.com/mongodb/maap-agent-builder"
-LABEL org.opencontainers.image.description="MAAP Agent Builder"
+LABEL org.opencontainers.image.source="https://github.com/mongodb/mdb-agent-builder"
+LABEL org.opencontainers.image.description="MDB Agent Builder"
 LABEL org.opencontainers.image.licenses="Apache-2.0"

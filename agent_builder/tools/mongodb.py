@@ -1,5 +1,5 @@
 """
-MongoDB tools for MAAP Agent Builder.
+MongoDB tools for MDB Agent Builder.
 
 This module provides integration with MongoDB Atlas for vector search,
 full text search, and natural language to MQL query conversion.

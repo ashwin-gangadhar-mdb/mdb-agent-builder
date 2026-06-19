@@ -1,5 +1,5 @@
 """
-Centralized logging configuration for the MAAP Agent Builder.
+Centralized logging configuration for the MDB Agent Builder.
 """
 
 import contextlib

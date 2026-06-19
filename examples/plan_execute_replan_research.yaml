@@ -12,7 +12,7 @@ tools:
     tool_type: full_text_search
     description: Search research notes and internal documents.
     connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-    namespace: maap_examples.research_notes
+    namespace: mdb_examples.research_notes
     additional_kwargs:
       index_name: full_text_index
       text_field: text

@@ -23,7 +23,7 @@ embeddings:
 
 checkpointer:
   connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-  db_name: maap_examples_state
+  db_name: mdb_examples_state
   collection_name: memory_checkpoints
   name: memory_checkpointer
 
@@ -34,14 +34,14 @@ memory:
   - name: recall                          # episodic — verbatim fragments
     memory_type: episodic
     connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-    namespace: maap_examples.episodic_memories
+    namespace: mdb_examples.episodic_memories
     embedding_model: local_embedding      # reference → embeddings[name]
     index_name: episodic_memory_index
 
   - name: observations                    # observational — LLM-distilled facts
     memory_type: observational
     connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-    namespace: maap_examples.observational_memories
+    namespace: mdb_examples.observational_memories
     embedding_model: local_embedding      # reference → embeddings[name]
     llm: local_llm                        # reference → llms[name]
     index_name: observational_memory_index

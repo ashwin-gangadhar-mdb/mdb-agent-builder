@@ -1,7 +1,7 @@
 .PHONY: clean install dev test lint format docker-build docker-run docker-debug setup-env create-config create-agent validate-config add-tool run serve serve-prod build-package help verify reinstall
 
 # Project variables
-PROJECT_NAME := maap-agent-builder
+PROJECT_NAME := mdb-agent-builder
 PYTHON := python3
 PIP := $(PYTHON) -m pip
 CONFIG_DIR := config
@@ -19,7 +19,7 @@ GUNICORN_WORKERS ?= 4
 GUNICORN_TIMEOUT ?= 120
 
 help:
-	@echo "MAAP Agent Builder"
+	@echo "MDB Agent Builder"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make setup-env       Create virtual environment and install dependencies"
@@ -233,7 +233,7 @@ docker-run:
 
 # Run the agent server (Flask dev server — single process, for local dev)
 run:
-	@echo "Running MAAP Agent Builder server (dev) on port $(PORT)..."
+	@echo "Running MDB Agent Builder server (dev) on port $(PORT)..."
 	@if [ ! -f $(CONFIG_PATH) ]; then \
 		echo "Configuration file not found at $(CONFIG_PATH). Creating default configuration..."; \
 		make create-config; \
@@ -248,7 +248,7 @@ serve: run
 # Workers share conversation state via MongoDB when a 'state:' or
 # 'governance:' section is configured in the YAML.
 serve-prod:
-	@echo "Running MAAP Agent Builder with Gunicorn ($(GUNICORN_WORKERS) workers) on port $(PORT)..."
+	@echo "Running MDB Agent Builder with Gunicorn ($(GUNICORN_WORKERS) workers) on port $(PORT)..."
 	@if [ ! -f $(CONFIG_PATH) ]; then \
 		echo "Configuration file not found at $(CONFIG_PATH). Creating default configuration..."; \
 		$(MAKE) create-config; \

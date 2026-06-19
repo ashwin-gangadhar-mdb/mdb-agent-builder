@@ -17,7 +17,7 @@ tools:
     tool_type: vector_search
     description: Search authorized support documentation.
     connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-    namespace: maap_examples.support_docs
+    namespace: mdb_examples.support_docs
     embedding_model: local_embeddings
     additional_kwargs:
       index_name: vector_index
@@ -29,7 +29,7 @@ tools:
 governance:
   enabled: true
   connection_str: ${MONGODB_URI:-mongodb://localhost:27017}
-  db_name: maap_examples_control_plane
+  db_name: mdb_examples_control_plane
   default_policy:
     permissions:
       - tools.call.support_docs

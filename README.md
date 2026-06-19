@@ -1,10 +1,10 @@
-# MAAP Agent Builder
+# MDB Agent Builder
 
 A production-ready framework for building and deploying LLM agents with multiple agent types, multi-agent coordination, advanced memory systems, and governance controls. Built on LangChain, LangGraph, and MongoDB.
 
 ## Overview
 
-MAAP Agent Builder enables you to:
+MDB Agent Builder enables you to:
 
 - **Build diverse agent types** — ReAct, Tool-Call, Reflection, Plan-Execute-Replan, and Long-Term Memory agents, all via YAML
 - **Coordinate multiple agents** — configure handoffs between agents so they can route to each other based on conversation context
@@ -30,8 +30,8 @@ The fastest way to get running:
 
 ```bash
 # 1. Clone and enter the project
-git clone https://github.com/mongodb/maap-agent-builder.git
-cd maap-agent-builder
+git clone https://github.com/mongodb/mdb-agent-builder.git
+cd mdb-agent-builder
 
 # 2. Create virtual environment and install
 python3 -m venv .venv
@@ -67,8 +67,8 @@ Visit `http://localhost:5000/health` and start chatting at `POST /chat`.
 ### Step 1: Clone and install dependencies
 
 ```bash
-git clone https://github.com/mongodb/maap-agent-builder.git
-cd maap-agent-builder
+git clone https://github.com/mongodb/mdb-agent-builder.git
+cd mdb-agent-builder
 ```
 
 **Option A: Using the Makefile (recommended)**
@@ -119,7 +119,7 @@ FLASK_SECRET_KEY=<your-generated-key>
 
 # Admin token — required for admin endpoints (GET /threads, global POST /reset).
 # Leave unset to disable admin operations entirely. Generate like the secret key.
-MAAP_ADMIN_TOKEN=<your-generated-token>
+MDB_ADMIN_TOKEN=<your-generated-token>
 
 # Server settings
 LOG_LEVEL=INFO
@@ -215,7 +215,7 @@ make docker-debug
 
 ```bash
 # Build
-docker build -t maap-agent-builder .
+docker build -t mdb-agent-builder .
 
 # Run
 docker run -p 5000:5000 \
@@ -225,7 +225,7 @@ docker run -p 5000:5000 \
   --env-file .env \
   -e AGENT_CONFIG_PATH=/app/config/agents.yaml \
   -e GUNICORN_WORKERS=8 \
-  maap-agent-builder
+  mdb-agent-builder
 ```
 
 The `CONTAINER_RUNTIME` Makefile variable also applies to `docker-run` and `docker-debug`. Override it with `make docker-run CONTAINER_RUNTIME=podman` to use Podman instead of Docker across all three targets.
@@ -378,7 +378,7 @@ GROVE_API_KEY=...
 # Flask / server settings
 FLASK_SECRET_KEY=<generate with: python3 -c "import secrets; print(secrets.token_hex(32))">
 FLASK_ENV=production           # Set in production to enforce FLASK_SECRET_KEY and block debug mode
-MAAP_ADMIN_TOKEN=<token>       # Required for GET /threads and global POST /reset; unset = admin ops disabled
+MDB_ADMIN_TOKEN=<token>       # Required for GET /threads and global POST /reset; unset = admin ops disabled
 AGENT_CONFIG_PATH=config/agents.yaml
 LOG_LEVEL=INFO
 PORT=5000
@@ -630,7 +630,7 @@ agent:
 
 ## API Endpoints
 
-All endpoints expect `Content-Type: application/json`. State-changing endpoints (`/reset`) require the `X-Requested-With: XMLHttpRequest` header as CSRF protection. Administrative operations (`GET /threads`, global `POST /reset`) additionally require the `X-Admin-Token` header to match the `MAAP_ADMIN_TOKEN` environment variable — when that variable is unset, they are disabled.
+All endpoints expect `Content-Type: application/json`. State-changing endpoints (`/reset`) require the `X-Requested-With: XMLHttpRequest` header as CSRF protection. Administrative operations (`GET /threads`, global `POST /reset`) additionally require the `X-Admin-Token` header to match the `MDB_ADMIN_TOKEN` environment variable — when that variable is unset, they are disabled.
 
 The application enforces a 1 MB request body limit and rate limits `/chat` (60 requests/minute) and `/reset` (30 requests/minute). Rate-limit buckets are keyed on the source IP address plus the asserted tenant and user, so rotating identities does not bypass the limit.
 
@@ -713,24 +713,24 @@ curl -X POST http://localhost:5000/reset \
 
 Thread ownership is verified against the state provider when available, and the durable copy of the history is cleared as well as the in-process copy.
 
-Omitting `thread_id` resets **all** threads — this is an administrative operation that additionally requires the `X-Admin-Token` header to match the `MAAP_ADMIN_TOKEN` environment variable:
+Omitting `thread_id` resets **all** threads — this is an administrative operation that additionally requires the `X-Admin-Token` header to match the `MDB_ADMIN_TOKEN` environment variable:
 
 ```bash
 curl -X POST http://localhost:5000/reset \
   -H "Content-Type: application/json" \
   -H "X-Requested-With: XMLHttpRequest" \
-  -H "X-Admin-Token: $MAAP_ADMIN_TOKEN" \
+  -H "X-Admin-Token: $MDB_ADMIN_TOKEN" \
   -d '{}'
 ```
 
-If `MAAP_ADMIN_TOKEN` is not set, global reset (and the `/threads` endpoint below) are disabled entirely.
+If `MDB_ADMIN_TOKEN` is not set, global reset (and the `/threads` endpoint below) are disabled entirely.
 
 ### List Active Threads (admin)
 
 Thread IDs grant access to conversation history, so listing them requires the admin token:
 
 ```bash
-curl http://localhost:5000/threads -H "X-Admin-Token: $MAAP_ADMIN_TOKEN"
+curl http://localhost:5000/threads -H "X-Admin-Token: $MDB_ADMIN_TOKEN"
 
 # Response:
 # {"status": "success", "threads": ["thread-1", "thread-2"], "count": 2}
@@ -803,9 +803,10 @@ All API responses include the following security headers:
 
 - **Localhost bind by default** — `agent-builder serve` and the Flask dev server bind `127.0.0.1`; exposing on the network requires an explicit `--host 0.0.0.0`. Gunicorn/Docker deployments bind `0.0.0.0` explicitly in `startup.sh`.
 - **Debug mode blocked in production** — `AgentApp.run(debug=True)` raises when `FLASK_ENV=production` (the Werkzeug debugger allows arbitrary code execution from the browser).
-- **Admin operations are opt-in** — `GET /threads` and global `POST /reset` require `X-Admin-Token` matching `MAAP_ADMIN_TOKEN` (constant-time comparison). With no token configured, they are disabled — there is no default credential.
+- **Admin operations are opt-in** — `GET /threads` and global `POST /reset` require `X-Admin-Token` matching `MDB_ADMIN_TOKEN` (constant-time comparison). With no token configured, they are disabled — there is no default credential.
 - **No message content in logs** — `/chat` logs message length and thread ID only, so PII never reaches the logs even when governance redaction is off.
 - **YAML env-var allowlist** — `${VAR}` references in YAML configs resolve only variables matching `YAML_ENV_VAR_ALLOWLIST` patterns, so a tampered config cannot exfiltrate arbitrary server secrets.
+- **MDB prefix for admin token** — environment variable is now `MDB_ADMIN_TOKEN` instead of the previous `MAAP_ADMIN_TOKEN`.
 - **Sanitized connection strings** — MongoDB URIs are credential-masked before logging.
 
 > **Deployment note:** the API has no built-in end-user authentication — `tenant_id`/`user_id` are asserted by the client. Deploy behind a trusted gateway or reverse proxy that authenticates callers and injects identity; do not expose the service directly to untrusted clients. If you use the `nl_to_mql` tool, scope the MongoDB user it connects with to read-only access on the intended database.

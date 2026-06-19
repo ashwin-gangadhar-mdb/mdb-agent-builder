@@ -23,7 +23,7 @@ class AgentLogger:
     centralised :func:`get_logger`.
     """
 
-    def __init__(self, name: str = "maap-agent-builder", level: str = "INFO"):
+    def __init__(self, name: str = "mdb-agent-builder", level: str = "INFO"):
         self._logger = get_logger(name)
 
     def get_logger(self):
@@ -32,4 +32,4 @@ class AgentLogger:
 
 
 # Module-level logger preserved for ``from ... import logger`` call sites.
-logger = get_logger("maap-agent-builder")
+logger = get_logger("mdb-agent-builder")

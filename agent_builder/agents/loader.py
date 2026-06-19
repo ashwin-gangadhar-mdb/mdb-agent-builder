@@ -1,5 +1,5 @@
 """
-Agent loader for various agent types using the MAAP Agent Builder.
+Agent loader for various agent types using the MDB Agent Builder.
 This module provides functionality to load different types of agents
 including React, Reflection, Plan-Execute-Replan, and Long-Term Memory agents.
 """
