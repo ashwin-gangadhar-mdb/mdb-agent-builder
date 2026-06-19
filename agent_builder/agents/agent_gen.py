@@ -7,7 +7,7 @@ of agent modules to avoid circular dependencies.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Tuple, TypeVar, cast
+from typing import Any, Dict, List, Optional, Tuple, TypeVar, cast
 
 from agent_builder.utils.logging_config import get_logger
 
@@ -17,9 +17,41 @@ logger = get_logger(__name__)
 AgentReturnType = TypeVar("AgentReturnType")
 
 
-def create_react_agent(*args: Any, **kwargs: Any) -> Any:
-    """Create a LangGraph ReAct agent while keeping LangGraph lazily imported."""
+def create_react_agent(
+    *args: Any,
+    policy: Optional[Any] = None,
+    guardrails: Optional[Any] = None,
+    audit_sink: Optional[Any] = None,
+    use_dynamic_policy: bool = False,
+    **kwargs: Any,
+) -> Any:
+    """
+    Create a LangGraph ReAct agent.
+
+    When *policy* is provided, the agent's tool-execution node is replaced
+    with a single policy-aware choke-point that enforces ``AccessPolicy``
+    on every tool call (Approach B — single auditable node instead of
+    per-tool wrappers).
+
+    Set *use_dynamic_policy=True* to read the policy from
+    ``config["configurable"]["policy"]`` at execution time rather than
+    from the fixed *policy* argument.  This enables per-request policy
+    resolution without rebuilding the agent graph.
+    """
     from langgraph.prebuilt import create_react_agent as langgraph_create_react_agent
+
+    if policy is not None and kwargs.get("tools"):
+        from agent_builder.security.tool_node import create_policy_aware_tool_node
+
+        tools = kwargs["tools"]
+        kwargs["tools_node"] = create_policy_aware_tool_node(
+            tools=tools,
+            policy=policy,
+            guardrails=guardrails,
+            audit_sink=audit_sink,
+            use_dynamic_policy=use_dynamic_policy,
+        )
+        del kwargs["tools"]
 
     return langgraph_create_react_agent(*args, **kwargs)
 

@@ -90,6 +90,7 @@ class MongoDBTools:
             index_name=self.index_name,
             text_field=self.text_field,
         )
+        self.vector_store = vector_store
         self.logger.info(
             f"Vector store initialized, creating retriever with top_k={self.top_k}"
         )
@@ -104,12 +105,14 @@ class MongoDBTools:
         db = self.client[self.database_name]
         collection = db[self.collection_name]
 
-        def retriever(query: str) -> List[Dict[str, Any]]:
+        def retriever(
+            query: str, pre_filter: Optional[Dict[str, Any]] = None
+        ) -> List[Dict[str, Any]]:
             self.logger.info(f"Performing full-text search with query: {query}")
             if not query:
                 self.logger.warning("Empty query provided for full-text search")
                 return []
-            pipeline = [
+            pipeline: List[Dict[str, Any]] = [
                 {
                     "$search": {
                         "index": self.index_name,
@@ -124,10 +127,15 @@ class MongoDBTools:
                         },
                     }
                 },
-                {"$project": {"_id": 0}},
-                {"$limit": self.top_k},
             ]
-            self.logger.debug("Full-text search pipeline built for index: %s", self.index_name)
+            if pre_filter:
+                pipeline.append({"$match": pre_filter})
+            pipeline.append({"$project": {"_id": 0}})
+            pipeline.append({"$limit": self.top_k})
+            self.logger.debug(
+                "Full-text search pipeline built for index: %s, pre_filter: %s",
+                self.index_name, pre_filter,
+            )
             results = list(collection.aggregate(pipeline))
             self.logger.debug("Full-text search returned %d results", len(results))
             documents = [
@@ -146,24 +154,35 @@ class MongoDBTools:
         tool_logger = get_logger(tool_logger_name)
         tool_logger.info(f"Creating vector retriever tool: {self.name}")
 
-        vector_retriever = self._init_vector_retriever()
+        self._init_vector_retriever()
+        vector_store = self.vector_store
+
+        _top_k = self.top_k
+        _min_score = self.min_score
 
         @tool
-        def vector_retriever_tool(search_query: str) -> str:
+        def vector_retriever_tool(
+            search_query: str,
+            pre_filter: Optional[Dict[str, Any]] = None,
+        ) -> str:
             """
-            Retrieve relevant documents and their information from a vector store based on provided search query.
+            Retrieve relevant documents from a vector store.
             Args:
                 search_query (str): The query to search for relevant documents.
             Returns:
                 str: A formatted string containing the retrieved documents and their sources.
             """
             tool_logger.info(f"Tool {self.name}: Retrieving documents for query")
-            tool_logger.debug(f"Tool {self.name}: Query: {search_query}")
+            tool_logger.debug(
+                f"Tool {self.name}: Query: {search_query}, pre_filter: {pre_filter}"
+            )
             try:
-                results = vector_retriever.invoke(search_query)
+                results = vector_store.similarity_search(
+                    search_query,
+                    k=_top_k,
+                    pre_filter=pre_filter or {},
+                )
             except Exception as e:
-                # A genuine retrieval error: surface it as a ToolException so the
-                # agent framework can handle it, instead of masking it as data.
                 tool_logger.exception(f"Tool {self.name}: Error during retrieval: {e}")
                 raise ToolException(f"Vector retrieval failed: {e}") from e
 
@@ -179,6 +198,7 @@ class MongoDBTools:
                 for i, doc in enumerate(results)
             )
 
+        vector_retriever_tool.__dict__["retrieval_aware"] = True
         return vector_retriever_tool
 
     def get_full_text_search_tool(self):
@@ -192,7 +212,9 @@ class MongoDBTools:
         full_text_search_retriever = self._init_full_text_retriever()
 
         @tool
-        def full_text_search_tool(query: str) -> str:
+        def full_text_search_tool(
+            query: str, pre_filter: Optional[Dict[str, Any]] = None
+        ) -> str:
             """
             Perform a full-text search on the MongoDB collection.
             Args:
@@ -201,7 +223,9 @@ class MongoDBTools:
                 str: The results of the full-text search.
             """
             tool_logger.info(f"Tool {self.name}: Performing full-text search")
-            tool_logger.debug(f"Tool {self.name}: Query: {query}")
+            tool_logger.debug(
+                f"Tool {self.name}: Query: {query}, pre_filter: {pre_filter}"
+            )
             if not query:
                 tool_logger.warning(
                     f"Tool {self.name}: Empty query provided for full-text search"
@@ -211,7 +235,7 @@ class MongoDBTools:
                 tool_logger.info(
                     f"Tool {self.name}: Executing full-text search \t Query: {query}"
                 )
-                results = full_text_search_retriever(query)
+                results = full_text_search_retriever(query, pre_filter=pre_filter)
                 tool_logger.info(
                     f"Tool {self.name}: Full-text search returned {len(results)} results"
                 )
@@ -233,6 +257,7 @@ class MongoDBTools:
                 tool_logger.exception(f"Tool {self.name}: Error during search: {e}")
                 return "Full-text search failed."
 
+        full_text_search_tool.__dict__["retrieval_aware"] = True
         return full_text_search_tool
 
     def get_mdb_toolkit(self, llm):

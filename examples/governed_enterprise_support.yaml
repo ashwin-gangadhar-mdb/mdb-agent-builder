@@ -1,4 +1,33 @@
-# Governed enterprise pattern: MongoDB policies, audit, state, and retrieval.
+# Governed enterprise support — MongoDB policies, audit, state, and retrieval.
+#
+# WHAT THIS EXAMPLE ENFORCES (v1):
+#   • Tool RBAC — only tools listed in `permissions` are callable. The
+#     `support_docs` tool requires the `tools.call.support_docs` permission.
+#     Any tool not listed (including nl_to_mql, mongodb_toolkit, MCP) is
+#     denied under governance.
+#   • Retrieval scoping — vector_search receives a `pre_filter` that includes
+#     `tenant_id`, `user_id`, and `classification: {$in: [public, internal]}`.
+#     The full-text search tool similarly scopes via a `$match` stage.
+#   • Blocked topics — phrases in `blocked_topics` are rejected at the input
+#     guardrail.
+#   • PII redaction + prompt injection detection (on by default).
+#   • Audit events for every allow/deny tool call.
+#
+# WHAT IS NOT ENFORCED (v1 — deferred):
+#   • nl_to_mql and mongodb_toolkit tools are always denied under governance
+#     (they execute LLM-generated MQL without tenant scoping).
+#   • MCP tools receive RBAC only; retrieval filtering is deferred.
+#
+# DEFAULT POLICY:
+#   The `default_policy` below is permissive (`permissions` lists exactly
+#   the tools you want callable).  If you deploy this without configuring
+#   MongoDB-backed per-tenant policies, the default policy is applied to
+#   every request.  This is fail-OPEN on permissions — a deliberate choice
+#   to avoid breaking existing deployments.  For deployments that need
+#   truly restrictive defaults, set `permissions: []` and define per-tenant
+#   policies in MongoDB only — but note that the current default of
+#   `permissions: ["*"]` is the framework-wide default that gets overridden
+#   by this file.
 embeddings:
   - name: local_embeddings
     provider: huggingface

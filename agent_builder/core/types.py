@@ -73,3 +73,22 @@ class AuditEvent:
     thread_id: Optional[str] = None
     payload: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
+
+
+class RetrievalFilterConflict(ValueError):
+    """
+    Raised when a tool's static retrieval filter and the policy's
+    retrieval filters cannot be merged safely.
+
+    The caller must deny the query (fail-closed); no retrieval call
+    may proceed after this exception.
+    """
+
+    def __init__(self, key: str, tool_value: Any, policy_value: Any):
+        self.key = key
+        self.tool_value = tool_value
+        self.policy_value = policy_value
+        super().__init__(
+            f"Retrieval filter conflict on key '{key}': "
+            f"tool={tool_value!r} vs policy={policy_value!r}"
+        )

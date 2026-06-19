@@ -23,6 +23,9 @@ SUPPORTED_LLM_PROVIDERS = {
     "azure",
     "ollama",
     "sagemaker",
+    "grove",
+    "google",
+    "gemini",
 }
 SUPPORTED_EMBEDDING_PROVIDERS = {
     "bedrock",
@@ -35,6 +38,8 @@ SUPPORTED_EMBEDDING_PROVIDERS = {
     "voyageai",
     "ollama",
     "huggingface",
+    "google",
+    "gemini",
 }
 SUPPORTED_TOOL_TYPES = {
     "vector_search",

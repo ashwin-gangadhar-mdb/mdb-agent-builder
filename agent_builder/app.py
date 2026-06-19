@@ -108,7 +108,15 @@ class AgentApp:
         """Load agent and related components from the YAML configuration."""
         try:
             logger.info("Loading application components from %s", self.config_path)
-            self.components = load_application(self.config_path)
+
+            # ── Pre-parse governance config to build providers BEFORE
+            #     load_application, so the governance bundle can wrap tools
+            #     at tool-assembly time (A1 — wrap before agent compile).
+            governance_bundle = self._build_governance_bundle()
+
+            self.components = load_application(
+                self.config_path, governance_bundle=governance_bundle
+            )
 
             if "agent" not in self.components:
                 logger.error("No agent configured in the YAML file")
@@ -119,65 +127,30 @@ class AgentApp:
                 logger.error("Agent object not properly initialized")
                 raise ValueError("Failed to initialize agent")
 
-            # If the agent persists its own state via a checkpointer, the app
-            # should not also forward its history (which would duplicate turns
-            # in the checkpointed state).
             self._agent_has_checkpointer = bool(
                 getattr(self.agent, "checkpointer", None)
             )
-
-            self.configure_governance()
 
             logger.info("Agent successfully loaded from %s", self.config_path)
         except Exception as e:
             logger.error("Failed to load application components: %s", str(e))
             raise
 
-    def configure_governance(self):
-        """Configure optional MongoDB-backed policy, audit, and state providers."""
-        governance_config = (self.components or {}).get("governance_config", {}) or {}
+    def _build_governance_bundle(self) -> Optional[dict]:
+        """Parse YAML governance config and build providers.
+
+        Called before ``load_application`` so the governance bundle is
+        available for tool-wrapping at assembly time (A1).
+        """
+        from agent_builder.yaml_loader import load_yaml
+
+        yaml_config = load_yaml(self.config_path)
+        governance_config = yaml_config.get("governance", {}) or {}
         self.governance_enabled = bool(governance_config.get("enabled", False))
 
-        if self.governance_enabled:
-            connection_str = governance_config.get("connection_str")
-            db_name = governance_config.get("db_name", "agent_control_plane")
-            default_policy = governance_config.get("default_policy", {"permissions": ["*"]})
-
-            policy_config = governance_config.get("policy", {}) or {}
-            if connection_str and policy_config.get("provider", "mongodb") == "mongodb":
-                self.policy_provider = MongoDBPolicyProvider(
-                    connection_str=connection_str,
-                    db_name=policy_config.get("db_name", db_name),
-                    collection_name=policy_config.get("collection_name", "agent_policies"),
-                    default_policy=default_policy,
-                )
-            else:
-                self.policy_provider = StaticPolicyProvider(default_policy)
-
-            audit_config = governance_config.get("audit", {}) or {}
-            if connection_str and audit_config.get("enabled", True):
-                self.audit_provider = MongoDBAuditProvider(
-                    connection_str=connection_str,
-                    db_name=audit_config.get("db_name", db_name),
-                    collection_name=audit_config.get("collection_name", "agent_audit_events"),
-                )
-
-            state_config = governance_config.get("state", {}) or {}
-            if connection_str and state_config.get("enabled", True):
-                self.state_provider = MongoDBStateProvider(
-                    connection_str=connection_str,
-                    db_name=state_config.get("db_name", db_name),
-                    collection_name=state_config.get("collection_name", "agent_sessions"),
-                )
-
-            logger.info("Governance controls enabled")
-        else:
-            logger.info("Governance controls disabled")
-
-        # Standalone state config — activated independently of governance, enabling
-        # cross-worker session state without requiring the full governance stack.
-        if self.state_provider is None:
-            state_standalone = (self.components or {}).get("state_config", {}) or {}
+        if not self.governance_enabled:
+            # State provider may still be configured standalone
+            state_standalone = yaml_config.get("state", {}) or {}
             standalone_conn = state_standalone.get("connection_str")
             if standalone_conn and state_standalone.get("enabled", True):
                 self.state_provider = MongoDBStateProvider(
@@ -187,7 +160,66 @@ class AgentApp:
                         "collection_name", "agent_sessions"
                     ),
                 )
-                logger.info("Standalone state provider configured for multi-worker deployments")
+            return None
+
+        connection_str = governance_config.get("connection_str")
+        db_name = governance_config.get("db_name", "agent_control_plane")
+        default_policy = governance_config.get(
+            "default_policy", {"permissions": ["*"]}
+        )
+
+        policy_config = governance_config.get("policy", {}) or {}
+        if connection_str and policy_config.get("provider", "mongodb") == "mongodb":
+            self.policy_provider = MongoDBPolicyProvider(
+                connection_str=connection_str,
+                db_name=policy_config.get("db_name", db_name),
+                collection_name=policy_config.get(
+                    "collection_name", "agent_policies"
+                ),
+                default_policy=default_policy,
+            )
+        else:
+            self.policy_provider = StaticPolicyProvider(default_policy)
+
+        audit_config = governance_config.get("audit", {}) or {}
+        if connection_str and audit_config.get("enabled", True):
+            self.audit_provider = MongoDBAuditProvider(
+                connection_str=connection_str,
+                db_name=audit_config.get("db_name", db_name),
+                collection_name=audit_config.get(
+                    "collection_name", "agent_audit_events"
+                ),
+            )
+
+        state_config = governance_config.get("state", {}) or {}
+        if connection_str and state_config.get("enabled", True):
+            self.state_provider = MongoDBStateProvider(
+                connection_str=connection_str,
+                db_name=state_config.get("db_name", db_name),
+                collection_name=state_config.get(
+                    "collection_name", "agent_sessions"
+                ),
+            )
+
+        logger.info("Governance controls enabled")
+
+        def _audit_sink(event_type: str, payload: dict) -> None:
+            if self.audit_provider:
+                try:
+                    self.audit_provider.record_raw(
+                        event_type=event_type,
+                        tenant_id=payload.get("tenant_id", "unknown"),
+                        user_id=payload.get("user_id", "anonymous"),
+                        payload=payload,
+                    )
+                except Exception:
+                    pass
+
+        return {
+            "guardrails": self.guardrails,
+            "audit_sink": _audit_sink if self.audit_provider else None,
+            "governance": governance_config,
+        }
 
     # ------------------------------------------------------------------
     # Security helpers
@@ -330,21 +362,30 @@ class AgentApp:
         request_config: Dict[str, Any],
         thread_id: str,
         identity: IdentityContext,
+        policy: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Build a LangGraph run config.
 
-        LangGraph checkpointers and memory-aware agents read ``thread_id`` and
-        identity fields from ``config['configurable']`` — not from the top
+        LangGraph checkpointers, memory-aware agents, and policy-aware tool
+        nodes read settings from ``config['configurable']`` — not from the top
         level — so we place them there explicitly while preserving any other
         run options (e.g. ``recursion_limit``) the caller supplied.
+
+        When *policy* is provided (governance enabled), it is serialised into
+        ``configurable["policy"]`` so that Approach B's policy-aware tool node
+        can enforce access controls at tool-execution time.
         """
-        run_config = dict(request_config or {})
+        from dataclasses import asdict
+
+        run_config: Dict[str, Any] = dict(request_config or {})
         run_config.pop("identity", None)
         configurable = dict(run_config.get("configurable") or {})
         configurable.setdefault("thread_id", thread_id)
         configurable.setdefault("user_id", identity.user_id)
         configurable.setdefault("tenant_id", identity.tenant_id)
         configurable.setdefault("roles", list(identity.roles))
+        if policy is not None:
+            configurable["policy"] = asdict(policy)
         run_config["configurable"] = configurable
         return run_config
 
@@ -511,7 +552,10 @@ class AgentApp:
             )
 
             chat_history = self._load_history(thread_id)
-            run_config = self._build_run_config(request_config, thread_id, identity)
+            run_config = self._build_run_config(
+                request_config, thread_id, identity,
+                policy=policy if self.governance_enabled else None,
+            )
 
             # ── invoke the agent ─────────────────────────────────────────────
             try:

@@ -11,7 +11,7 @@ MDB Agent Builder enables you to:
 - **Scale across workers** — Gunicorn multi-worker support with MongoDB-backed conversation state and checkpointing
 - **Add long-term memory** — episodic (verbatim) and observational (distilled) memory with MongoDB Atlas Vector Search
 - **Enforce governance** — access policies, prompt injection detection, PII redaction, and audit logging
-- **Integrate any LLM or tool** — pluggable adapters for Anthropic, Bedrock, Fireworks, Cohere, Grove, and 10+ other providers
+- **Integrate any LLM or tool** — pluggable adapters for Anthropic, Bedrock, Fireworks, Cohere, Google Gemini, Grove, and 10+ other providers
 - **Persist across restarts** — MongoDB checkpointing for durable graph and conversation state
 
 ---
@@ -20,7 +20,7 @@ MDB Agent Builder enables you to:
 
 - **Python 3.10+** (3.11 or 3.12 recommended)
 - **MongoDB** — local (`mongodb://localhost:27017`) or Atlas cluster
-- **An LLM provider** — one of: Anthropic, OpenAI, Bedrock, Fireworks, Cohere, Together, Azure, Ollama, SageMaker, or Grove
+- **An LLM provider** — one of: Anthropic, Bedrock, Fireworks, Cohere, Together, Azure OpenAI, Google Gemini, Ollama, SageMaker, or Grove (an OpenAI-compatible gateway, which is also how you reach OpenAI/GPT models)
 
 ---
 
@@ -108,7 +108,6 @@ MONGODB_DATABASE=agent_builder
 
 # At least one LLM provider key (choose the one you use)
 ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
 FIREWORKS_API_KEY=...
 COHERE_API_KEY=...
 TOGETHER_API_KEY=...
@@ -344,10 +343,12 @@ governance:      # Optional: policies, audit, PII redaction
     permissions: ["*"]
   policy:
     provider: mongodb
+    collection_name: agent_policies
   audit:
     enabled: true
   state:
     enabled: true
+  use_dynamic_policy: true   # Use per-request policy via configurable dict
 ```
 
 > **Note:** Environment variable names resolved from YAML configs are restricted to an allowlist for security. Variables matching patterns like `MONGODB_.*`, `OPENAI_.*`, `ANTHROPIC_.*`, `GROVE_.*`, `OLLAMA_.*`, etc. are permitted. Customize the list by setting the `YAML_ENV_VAR_ALLOWLIST` environment variable to a comma-separated list of regex patterns.
@@ -361,13 +362,13 @@ MONGODB_DATABASE=agent_builder
 
 # LLM API keys (set the ones you need)
 ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
 FIREWORKS_API_KEY=...
 COHERE_API_KEY=...
 TOGETHER_API_KEY=...
 VOYAGEAI_API_KEY=...
+GOOGLE_API_KEY=...              # Google Gemini (LLM + embeddings); GEMINI_API_KEY also accepted
 
-# Azure OpenAI
+# Azure OpenAI (use this provider for OpenAI / GPT models)
 AZURE_OPENAI_API_KEY=...
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 
@@ -402,14 +403,16 @@ Models are declared under `llms:` and referenced by name from agents.
 |----------|-------------|-------|
 | `bedrock` | AWS credentials in environment | Amazon Bedrock chat models |
 | `anthropic` | `ANTHROPIC_API_KEY` | Anthropic Claude |
-| `openai` | `OPENAI_API_KEY` | OpenAI GPT models |
 | `fireworks` | `FIREWORKS_API_KEY` | Fireworks AI |
 | `together` | `TOGETHER_API_KEY` | Together AI |
 | `cohere` | `COHERE_API_KEY` | Cohere |
-| `azure` | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` | Azure OpenAI |
+| `azure` | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` | Azure OpenAI — use this for OpenAI / GPT models |
+| `google` / `gemini` | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) | Google Gemini (Google AI Studio). `max_tokens` maps to `max_output_tokens` |
 | `ollama` | None (local) | Local Ollama models. Defaults to `http://localhost:11434` |
 | `sagemaker` | `additional_kwargs.endpoint_name` | AWS SageMaker endpoints |
-| `grove` | `GROVE_API_BASE`, `GROVE_API_KEY` | Grove API gateway (OpenAI-compatible) |
+| `grove` | `GROVE_API_BASE`, `GROVE_API_KEY` | OpenAI-compatible gateway. Point `base_url` at any OpenAI-compatible endpoint (including `https://api.openai.com/v1`) to reach OpenAI GPT models |
+
+> **Note:** There is no standalone `openai` provider. To use OpenAI / GPT models, use the `azure` provider (Azure OpenAI) or the `grove` provider with `base_url` set to an OpenAI-compatible endpoint.
 
 #### Example LLM configuration
 
@@ -421,10 +424,18 @@ llms:
     temperature: 0.7
     max_tokens: 4096
 
-  - name: my-gpt
-    provider: openai
-    model_name: gpt-4o
+  - name: my-gpt                  # OpenAI / GPT via Azure OpenAI
+    provider: azure
+    model_name: gpt-4o            # your Azure deployment name
     temperature: 0.3
+
+  - name: my-gemini
+    provider: google              # or the "gemini" alias
+    model_name: gemini-1.5-pro
+    temperature: 0.3
+    max_tokens: 2048              # forwarded as max_output_tokens
+    additional_kwargs:
+      api_key: ${GOOGLE_API_KEY}  # optional; falls back to GOOGLE_API_KEY / GEMINI_API_KEY env
 
   - name: local-llama
     provider: ollama
@@ -432,6 +443,33 @@ llms:
     additional_kwargs:
       base_url: http://localhost:11434
 ```
+
+Google Gemini embedding models use the same `google` / `gemini` provider name under `embeddings:`:
+
+```yaml
+embeddings:
+  - name: gemini-embed
+    provider: google
+    model_name: models/text-embedding-004
+```
+
+#### Embedding Providers
+
+Embedding models are declared under `embeddings:` and referenced by name from tools and memory adapters.
+
+| Provider | Key / Config | Notes |
+|----------|-------------|-------|
+| `voyageai` | `VOYAGEAI_API_KEY` | Voyage AI embeddings |
+| `cohere` | `COHERE_API_KEY` | Cohere embeddings |
+| `bedrock` | AWS credentials in environment | Amazon Bedrock embeddings |
+| `sagemaker` | `additional_kwargs.endpoint_name` | AWS SageMaker embedding endpoints |
+| `azure` | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` | Azure OpenAI embeddings |
+| `together` | `TOGETHER_API_KEY` | Together AI embeddings |
+| `fireworks` | `FIREWORKS_API_KEY` | Fireworks AI embeddings |
+| `ollama` | None (local) | Local Ollama embedding models |
+| `huggingface` | None (local) | Local HuggingFace sentence-transformer models |
+| `vertexai` | Google Cloud credentials | Google Vertex AI embeddings |
+| `google` / `gemini` | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) | Google Gemini (Google AI Studio) embeddings |
 
 #### Grove API Gateway
 
@@ -452,6 +490,55 @@ llms:
 ```
 
 Resolution order for `base_url`: `additional_kwargs.base_url` → `GROVE_API_BASE` → `GROVE_API_GATEWAY_URL`. Required. Resolution order for `api_key`: `additional_kwargs.api_key` → `GROVE_API_KEY` → a placeholder (for unauthenticated gateways). Any other keys under `additional_kwargs` (e.g. `default_headers`, `organization`, `timeout`) are passed through to the OpenAI-compatible client.
+
+---
+
+## Tool Types
+
+Tools are declared under `tools:` and referenced by name from agents. Each tool sets a `tool_type`:
+
+| `tool_type` | Description |
+|-------------|-------------|
+| `vector_search` | Semantic (vector) search over a MongoDB Atlas collection via an embedding model |
+| `full_text_search` | Lucene-based full-text search over a MongoDB Atlas collection |
+| `nl_to_mql` | Natural-language-to-MongoDB-Query-Language tool that translates questions into MQL and runs them |
+| `mongodb_toolkit` | A bundle of MongoDB operation tools registered together under one entry |
+| `mcp` | Tools served by a Model Context Protocol (MCP) server |
+
+```yaml
+tools:
+  - name: product_search
+    tool_type: vector_search
+    namespace: my_db.products
+    connection_str: ${MONGODB_URI}
+    embedding_model: voyage          # Reference to an embedding model
+    index_name: vector_index
+
+  - name: product_lookup
+    tool_type: full_text_search
+    namespace: my_db.products
+    connection_str: ${MONGODB_URI}
+    index_name: text_index
+
+  - name: analytics
+    tool_type: nl_to_mql
+    namespace: my_db.orders
+    connection_str: ${MONGODB_URI}
+    llm: claude-3.5                  # LLM used to generate MQL
+    tenant_filter:                   # Scope generated MQL to a tenant
+      tenant_id: "acme-corp"
+
+  - name: external_data
+    tool_type: mcp
+    servers_config:
+      data_api:
+        transport: streamable_http
+        url: https://api.example.com/mcp/
+    tenant_filter:                   # Forwarded as metadata to MCP servers
+      tenant_id: "acme-corp"
+```
+
+> **Security note:** If you use the `nl_to_mql` tool, scope the MongoDB user it connects with to read-only access on the intended database.
 
 ---
 
@@ -774,6 +861,64 @@ governance:
     collection_name: agent_policies
 ```
 
+Policies are resolved per-request from the ``agent_policies`` collection (matching ``tenant_id``, ``user_id``, ``role``, or ``scope: "tenant_default"``).  The resolved ``AccessPolicy`` is cached in-memory with a short TTL (5 seconds by default) to avoid per-request MongoDB lookups under load.  Stale entries are evicted lazily on read — revoked permissions become effective within one TTL window.
+
+#### Policy cache configuration
+
+The policy cache is always enabled when using ``MongoDBPolicyProvider``.  The TTL defaults to 5 seconds and can be configured when constructing the provider directly (if you extend the framework programmatically):
+
+```python
+from agent_builder.security.policies import MongoDBPolicyProvider
+
+provider = MongoDBPolicyProvider(
+    connection_str="mongodb+srv://...",
+    db_name="agent_control_plane",
+    collection_name="agent_policies",
+    cache_ttl=10.0,  # seconds — tradeoff between freshness and performance
+)
+```
+
+### Policy-Aware Tool Enforcement (Approach B)
+
+When governance is enabled and the agent has tools, the framework automatically swaps the default LangGraph tool-execution node for a single policy-aware choke-point that enforces ``AccessPolicy`` on every tool call.  This replaces the need for per-tool wrappers with one auditable enforcement point.
+
+The policy is passed through the LangGraph ``configurable`` dict at request time so that per-tenant / per-user policies take effect without rebuilding the agent graph.  When governance is off (or the agent has no tools), the default tool node is used.
+
+To disable dynamic policy resolution and use a static policy instead (e.g. for testing), set ``use_dynamic_policy: false`` in your governance config:
+
+```yaml
+governance:
+  enabled: true
+  connection_str: ${MONGODB_URI}
+  use_dynamic_policy: true   # default; set to false for static policy
+```
+
+### Tenant-Aware Tool Filtering
+
+Tools that generate arbitrary MQL (``nl_to_mql``, ``mongodb_toolkit``) and MCP tools can be scoped with a ``tenant_filter`` that constrains data access to the configured tenant.  This enables safely unblocking these tools under governance — without a filter, they are always denied.
+
+```yaml
+tools:
+  - name: analytics
+    tool_type: nl_to_mql
+    namespace: my_db.orders
+    connection_str: ${MONGODB_URI}
+    llm: claude-3.5
+    tenant_filter:
+      tenant_id: "acme-corp"
+
+  - name: external_data
+    tool_type: mcp
+    servers_config:
+      data_api:
+        transport: streamable_http
+        url: https://api.example.com/mcp/
+    tenant_filter:
+      tenant_id: "acme-corp"
+```
+
+The ``tenant_filter`` dict is forwarded to the tool backend at configuration time.  For ``nl_to_mql`` and ``mongodb_toolkit`` it is merged into the MongoDB connection parameters.  For MCP tools it is injected as metadata into each server config so downstream MCP servers can enforce tenant-scoping.  ``vector_search`` and ``full_text_search`` tools already scope queries to the configured namespace and do not need explicit tenant filters.
+
 ### Guardrails
 
 Automatically applied when `governance.enabled: true`:
@@ -867,7 +1012,8 @@ agent_builder/
 │   └── mongodb_state.py      # Session state persistence
 ├── security/
 │   ├── guardrails.py         # Input/output/tool guardrails
-│   └── policies.py           # Policy providers (static, MongoDB)
+│   ├── policies.py           # Policy providers (static, MongoDB)
+│   └── tool_node.py          # Policy-aware tool-execution node (Approach B)
 ├── audit/
 │   └── mongodb_audit.py      # Audit event logging
 ├── app.py                    # Flask app, /chat /health /reset /threads routes
@@ -932,6 +1078,19 @@ make test
 ---
 
 ## Development
+
+### CI/CD
+
+The repository includes a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs on every push and pull request to `main`:
+
+| Job | What it does |
+|-----|-------------|
+| `test` | Runs `ruff check`, `mypy` type-check, and `pytest tests/ -v` across Python 3.10, 3.11, and 3.12 |
+| `orphaned-policy-guard` | Ensures every `AccessPolicy` field in `core/types.py` has an enforcement call site in `policies.py` or `guardrails.py` |
+
+The CI runs the offline test suite — Atlas-gated integration tests are skipped.  To add a new Python version or change the test matrix, edit `.github/workflows/ci.yml`.
+
+### Local development
 
 ```bash
 # Format code

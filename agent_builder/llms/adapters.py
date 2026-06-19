@@ -291,6 +291,75 @@ class GroveLLMAdapter(BaseLLMAdapter):
         return ChatOpenAI(**kwargs)
 
 
+class GoogleGenAILLMAdapter(BaseLLMAdapter):
+    """Adapter for Google Gemini chat models (Google AI / Generative Language API).
+
+    Uses ``langchain_google_genai.ChatGoogleGenerativeAI`` to talk to the
+    Gemini family of models with a Google AI Studio API key.  This is distinct
+    from the Vertex AI integration (``vertexai`` embedding provider), which
+    authenticates with Google Cloud credentials rather than an API key.
+
+    Configuration (YAML)::
+
+        llms:
+          - name: gemini
+            provider: google              # or the "gemini" alias
+            model_name: gemini-1.5-pro
+            temperature: 0.7
+            max_tokens: 2048
+            additional_kwargs:
+              api_key: ${GOOGLE_API_KEY}  # optional; falls back to env
+              top_p: 0.9                  # passed straight through
+
+    API key resolution order: ``additional_kwargs.google_api_key`` →
+    ``additional_kwargs.api_key`` → ``GOOGLE_API_KEY`` env → ``GEMINI_API_KEY``
+    env.
+
+    Note: ``ChatGoogleGenerativeAI`` expects ``max_output_tokens`` rather than
+    the OpenAI-style ``max_tokens``, so the config's ``max_tokens`` is mapped
+    accordingly.  It also has no ``streaming`` constructor argument (streaming
+    is selected per-call via ``.stream()``), so that flag is not forwarded.
+    """
+
+    def __init__(self, config: LLMConfig) -> None:
+        self._config = config
+
+    def get_llm(self) -> BaseLLM:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        # Copy so we can pop key-resolution entries without mutating the config.
+        additional = dict(self._config.additional_kwargs or {})
+
+        api_key = (
+            additional.pop("google_api_key", None)
+            or additional.pop("api_key", None)
+            or os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+        )
+        if not api_key:
+            raise ValueError(
+                "GOOGLE_API_KEY (or GEMINI_API_KEY) environment variable is "
+                "required for Google Gemini, or pass google_api_key in "
+                "additional_kwargs."
+            )
+
+        kwargs: Dict[str, Any] = {
+            "model": self._config.model_name,
+            "temperature": self._config.temperature,
+            "google_api_key": api_key,
+        }
+        if self._config.max_tokens:
+            kwargs["max_output_tokens"] = self._config.max_tokens
+        # Remaining additional_kwargs (top_p, top_k, safety_settings, …) pass
+        # straight through to the client.
+        kwargs.update(additional)
+
+        logger.debug(
+            "Initialising Google Gemini LLM with model: %s", self._config.model_name
+        )
+        return ChatGoogleGenerativeAI(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -305,6 +374,8 @@ _ADAPTER_REGISTRY: Dict[str, type] = {
     "ollama": OllamaLLMAdapter,
     "sagemaker": SageMakerLLMAdapter,
     "grove": GroveLLMAdapter,
+    "google": GoogleGenAILLMAdapter,
+    "gemini": GoogleGenAILLMAdapter,
 }
 
 

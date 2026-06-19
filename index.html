@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MDB Agent Builder — YAML-first LLM agents on MongoDB</title>
+<meta name="description" content="Build and deploy production LLM agents through declarative YAML. ReAct, multi-agent, long-term memory, and governance — all on MongoDB.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@500;600&family=Inter:wght@400;500;600&family=Inter+Tight:wght@500;600&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   MDB Agent Builder — single-page docs
+   Tokens sourced from DESIGN.md (the design source of truth)
+   ============================================================ */
+:root {
+  --mdb-black: #000000;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-300: #d1d5db;
+  --gray-400: #9ca3af;
+  --gray-500: #6b7280;
+  --gray-700: #374151;
+  --gray-900: #111827;
+  --green: #059669;
+  --green-dark: #047857;
+  --blue: #0ea5e9;
+  --blue-dark: #0284c7;
+  --amber: #f59e0b;
+  --red: #e11d48;
+
+  /* Light mode (default) */
+  --bg: var(--gray-100);
+  --surface: #ffffff;
+  --surface-2: var(--gray-100);
+  --border: var(--gray-200);
+  --text: var(--mdb-black);
+  --text-muted: var(--gray-700);
+  --text-faint: var(--gray-500);
+  --code-bg: #f6f8fa;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.10);
+
+  /* Fonts */
+  --font-head: 'IBM Plex Serif', Georgia, serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-ui: 'Inter Tight', 'Inter', sans-serif;
+  --font-mono: 'Fira Code', ui-monospace, 'SF Mono', monospace;
+}
+
+[data-theme="dark"] {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #162033;
+  --border: #334155;
+  --text: #f8fafc;
+  --text-muted: #cbd5e1;
+  --text-faint: #94a3b8;
+  --code-bg: #0b1220;
+  --shadow: 0 1px 3px rgba(0,0,0,0.4);
+  --shadow-lg: 0 4px 20px rgba(0,0,0,0.5);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+
+body {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  transition: background .2s ease, color .2s ease;
+}
+
+h1, h2, h3, h4 { font-family: var(--font-head); font-weight: 600; line-height: 1.2; color: var(--text); }
+h1 { font-size: 32px; }
+h2 { font-size: 24px; margin-bottom: 20px; }
+h3 { font-size: 18px; margin-bottom: 16px; }
+h4 { font-size: 15px; margin-bottom: 8px; }
+p { margin-bottom: 12px; color: var(--text-muted); }
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: var(--font-mono); font-size: 0.92em; }
+strong { color: var(--text); font-weight: 600; }
+
+.label {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ---------- Top bar ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; gap: 16px;
+  height: 56px; padding: 0 24px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .brand {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--font-head); font-weight: 600; font-size: 16px; color: var(--text);
+}
+.brand .leaf { width: 22px; height: 22px; }
+.topbar .spacer { flex: 1; }
+.topbar nav { display: flex; gap: 20px; }
+.topbar nav a {
+  font-family: var(--font-ui); font-weight: 500; font-size: 13px; color: var(--text-muted);
+}
+.topbar nav a:hover { color: var(--text); text-decoration: none; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-muted);
+  cursor: pointer; font-size: 15px;
+}
+.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.gh-link {
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 4px; border: 1px solid var(--border);
+  color: var(--text); background: var(--surface);
+}
+.gh-link:hover { background: var(--surface-2); text-decoration: none; }
+
+@media (max-width: 860px) { .topbar nav { display: none; } }
+
+/* ---------- Layout: 2-column (nav + content) ---------- */
+.shell { max-width: 1200px; margin: 0 auto; display: flex; gap: 0; }
+.sidenav {
+  position: sticky; top: 56px; align-self: flex-start;
+  width: 220px; flex-shrink: 0; height: calc(100vh - 56px);
+  overflow-y: auto; padding: 28px 16px 40px 24px;
+  border-right: 1px solid var(--border);
+}
+.sidenav .group { margin-bottom: 22px; }
+.sidenav .group-title {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint);
+  margin-bottom: 8px;
+}
+.sidenav a {
+  display: block; padding: 5px 10px; border-radius: 4px;
+  font-family: var(--font-ui); font-size: 13px; font-weight: 500;
+  color: var(--text-muted); margin-bottom: 1px;
+}
+.sidenav a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.sidenav a.active { background: var(--surface-2); color: var(--green); box-shadow: inset 2px 0 0 var(--green); }
+
+.content { flex: 1; min-width: 0; padding: 32px 40px 80px; }
+@media (max-width: 980px) {
+  .sidenav { display: none; }
+  .content { padding: 28px 20px 64px; }
+}
+
+section { scroll-margin-top: 72px; margin-bottom: 56px; }
+section > .label { color: var(--green); display: block; margin-bottom: 8px; }
+
+/* ---------- Hero ---------- */
+.hero { padding: 24px 0 8px; }
+.hero h1 { font-size: 40px; line-height: 1.1; margin-bottom: 16px; letter-spacing: -0.01em; }
+.hero .tagline { font-size: 17px; max-width: 640px; color: var(--text-muted); margin-bottom: 24px; }
+.hero .cta-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+.btn {
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px;
+  padding: 9px 18px; border-radius: 4px; border: 1px solid transparent; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.btn-primary { background: var(--green); color: #fff; }
+.btn-primary:hover { background: var(--green-dark); text-decoration: none; }
+.btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+.btn-secondary:hover { background: var(--surface-2); text-decoration: none; }
+
+.pill-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill {
+  font-family: var(--font-mono); font-size: 12px;
+  padding: 4px 10px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+}
+.pill b { color: var(--green); font-weight: 600; }
+
+/* ---------- Badges ---------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+  padding: 3px 9px; border-radius: 4px; color: #fff;
+}
+.badge.green { background: var(--green); }
+.badge.blue  { background: var(--blue); }
+.badge.amber { background: var(--amber); color: #111827; }
+.badge.red   { background: var(--red); }
+.badge.ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+
+/* ---------- Cards ---------- */
+.grid { display: grid; gap: 16px; }
+.grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 760px) { .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 20px; box-shadow: var(--shadow);
+}
+.card .card-icon {
+  width: 36px; height: 36px; border-radius: 8px; display: flex;
+  align-items: center; justify-content: center; margin-bottom: 12px;
+}
+.card h3 { font-size: 16px; margin-bottom: 6px; }
+.card p { font-size: 13px; margin-bottom: 0; }
+.card .meta { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+.tint-green { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.tint-blue  { background: color-mix(in srgb, var(--blue) 16%, transparent); color: var(--blue); }
+.tint-amber { background: color-mix(in srgb, var(--amber) 18%, transparent); color: #b45309; }
+.tint-red   { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
+[data-theme="dark"] .tint-amber { color: var(--amber); }
+
+/* ---------- Code blocks ---------- */
+.code {
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; margin: 16px 0 24px;
+}
+.code-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600; color: var(--text-faint);
+}
+.code-head .dot { width: 10px; height: 10px; border-radius: 50%; }
+.code-head .fname { margin-left: 4px; color: var(--text-muted); }
+.code pre {
+  margin: 0; padding: 16px; overflow-x: auto;
+  font-family: var(--font-mono); font-size: 13px; line-height: 1.6; color: var(--text);
+}
+.code pre code { font-size: 13px; }
+
+/* syntax tint (manual, no JS highlighter) */
+.tok-key { color: var(--blue); }
+.tok-str { color: var(--green); }
+.tok-com { color: var(--text-faint); font-style: italic; }
+.tok-num { color: var(--amber); }
+.tok-fn  { color: var(--red); }
+[data-theme="dark"] .tok-key { color: #38bdf8; }
+[data-theme="dark"] .tok-str { color: #34d399; }
+
+/* ---------- Steps ---------- */
+.steps { counter-reset: step; }
+.step { display: flex; gap: 16px; margin-bottom: 8px; }
+.step .num {
+  counter-increment: step; flex-shrink: 0;
+  width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--green); color: #fff; font-family: var(--font-ui); font-weight: 600; font-size: 13px;
+}
+.step .num::before { content: counter(step); }
+.step .body { flex: 1; padding-top: 2px; }
+.step .body h4 { margin-bottom: 4px; }
+.step .body p { font-size: 13px; margin-bottom: 8px; }
+
+/* ---------- Tables ---------- */
+.table-wrap { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin: 16px 0 24px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+th {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-faint); background: var(--surface-2);
+}
+tr:last-child td { border-bottom: none; }
+td code { color: var(--text); background: var(--surface-2); padding: 2px 6px; border-radius: 4px; }
+tbody tr:hover { background: var(--surface-2); }
+
+/* ---------- Architecture diagram ---------- */
+.arch {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 24px; box-shadow: var(--shadow); overflow-x: auto;
+}
+.arch-layer {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; margin-bottom: 0; background: var(--surface-2);
+  position: relative;
+}
+.arch-layer + .arch-flow { margin: 0 auto; }
+.layer-title {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint);
+  margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+}
+.layer-title .tag {
+  font-family: var(--font-mono); font-size: 10px; padding: 1px 6px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-faint);
+  text-transform: none; letter-spacing: 0;
+}
+.node-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.node {
+  flex: 1; min-width: 130px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px;
+}
+.node .n-name { font-family: var(--font-ui); font-weight: 600; font-size: 13px; color: var(--text); }
+.node .n-desc { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+.node.accent-green { border-left: 3px solid var(--green); }
+.node.accent-blue  { border-left: 3px solid var(--blue); }
+.node.accent-amber { border-left: 3px solid var(--amber); }
+.node.accent-red   { border-left: 3px solid var(--red); }
+.node.accent-black { border-left: 3px solid var(--text); }
+
+.arch-flow { text-align: center; color: var(--text-faint); font-size: 18px; line-height: 1; padding: 6px 0; }
+.arch-flow .flow-label {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-faint);
+  display: block; margin-top: 2px;
+}
+
+.layer-data { background: color-mix(in srgb, var(--green) 8%, var(--surface)); }
+[data-theme="dark"] .layer-data { background: color-mix(in srgb, var(--green) 12%, var(--surface)); }
+
+.legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--border); }
+.legend-item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-muted); }
+.legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
+
+/* lifecycle */
+.lifecycle { counter-reset: lc; margin-top: 8px; }
+.lc-step { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.lc-step:last-child { border-bottom: none; }
+.lc-step .lc-num {
+  counter-increment: lc; flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--surface-2); border: 1px solid var(--border);
+  font-family: var(--font-ui); font-weight: 600; font-size: 12px; color: var(--green);
+  display: flex; align-items: center; justify-content: center;
+}
+.lc-step .lc-num::before { content: counter(lc); }
+.lc-step .lc-text { font-size: 13px; color: var(--text-muted); padding-top: 2px; }
+.lc-step .lc-text b { color: var(--text); }
+.lc-step code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--text); }
+
+/* callout */
+.callout {
+  display: flex; gap: 12px; padding: 14px 16px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2); margin: 16px 0 24px;
+}
+.callout.warn { border-left: 3px solid var(--amber); }
+.callout.info { border-left: 3px solid var(--blue); }
+.callout .co-icon { font-size: 16px; flex-shrink: 0; }
+.callout p { margin: 0; font-size: 13px; }
+
+/* split */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+
+/* footer */
+.footer {
+  border-top: 1px solid var(--border); margin-top: 40px; padding: 28px 0 8px;
+  color: var(--text-faint); font-size: 13px;
+}
+.footer a { color: var(--text-muted); }
+.footer .row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 12px; }
+
+.lead { font-size: 15px; color: var(--text-muted); max-width: 720px; margin-bottom: 20px; }
+
+.kbd {
+  font-family: var(--font-mono); font-size: 12px; background: var(--surface-2);
+  border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px;
+}
+</style>
+</head>
+<body>
+
+<!-- ================= TOP BAR ================= -->
+<header class="topbar">
+  <a href="#top" class="brand">
+    <svg class="leaf" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M12 2C12 2 5 7 5 14c0 4 3 7 7 7s7-3 7-7C19 7 12 2 12 2z" fill="#059669"/>
+      <path d="M12 4.5V21" stroke="#fff" stroke-width="1.3" opacity="0.85"/>
+    </svg>
+    MDB Agent Builder
+  </a>
+  <div class="spacer"></div>
+  <nav>
+    <a href="#quickstart">Quick Start</a>
+    <a href="#features">Features</a>
+    <a href="#example">Example</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#api">API</a>
+  </nav>
+  <button class="icon-btn" id="themeToggle" title="Toggle dark mode" aria-label="Toggle dark mode">◐</button>
+  <a class="gh-link" href="https://github.com/ashwin-gangadhar-mdb/mdb-agent-builder" target="_blank" rel="noopener">★ GitHub</a>
+</header>
+
+<div class="shell" id="top">
+
+  <!-- ================= SIDE NAV ================= -->
+  <aside class="sidenav">
+    <div class="group">
+      <div class="group-title">Get Started</div>
+      <a href="#overview">Overview</a>
+      <a href="#quickstart">Quick Start</a>
+      <a href="#config">Configuration</a>
+    </div>
+    <div class="group">
+      <div class="group-title">Concepts</div>
+      <a href="#features">Feature Map</a>
+      <a href="#agent-types">Agent Types</a>
+      <a href="#tools">Tools &amp; Memory</a>
+      <a href="#governance">Governance</a>
+    </div>
+    <div class="group">
+      <div class="group-title">Reference</div>
+      <a href="#example">Worked Example</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#lifecycle">Request Lifecycle</a>
+      <a href="#api">API Endpoints</a>
+      <a href="#deploy">Deployment</a>
+    </div>
+  </aside>
+
+  <!-- ================= CONTENT ================= -->
+  <main class="content">
+
+    <!-- HERO -->
+    <section id="overview" class="hero">
+      <span class="badge green">Built on LangChain · LangGraph · MongoDB</span>
+      <h1 style="margin-top:16px;">Build LLM agents in YAML.<br>Ship them to production.</h1>
+      <p class="tagline">
+        MDB Agent Builder turns a declarative YAML file into a running, governed, multi-agent
+        system — ReAct loops, long-term memory, multi-agent handoffs, and policy enforcement,
+        all without writing orchestration code. Complexity made approachable.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#quickstart">Get started →</a>
+        <a class="btn btn-secondary" href="#architecture">See the architecture</a>
+      </div>
+      <div class="pill-row">
+        <span class="pill"><b>5</b> agent types</span>
+        <span class="pill"><b>10+</b> LLM providers</span>
+        <span class="pill"><b>5</b> tool types</span>
+        <span class="pill"><b>2</b> memory systems</span>
+        <span class="pill"><b>1</b> YAML file</span>
+      </div>
+    </section>
+
+    <!-- QUICK START -->
+    <section id="quickstart">
+      <span class="label">Get Started</span>
+      <h2>Quick Start</h2>
+      <p class="lead">From clone to a chatting agent in six steps. You need Python 3.10+, a MongoDB
+        instance (local or Atlas), and at least one LLM provider key.</p>
+
+      <div class="steps">
+        <div class="step"><div class="num"></div><div class="body">
+          <h4>Clone &amp; install</h4>
+          <p>Create a virtualenv and install the package with dev extras.</p>
+        </div></div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="dot" style="background:var(--red)"></span><span class="dot" style="background:var(--amber)"></span><span class="dot" style="background:var(--green)"></span><span class="fname">terminal</span></div>
+<pre><code><span class="tok-com"># Clone, create venv, install</span>
+git clone https://github.com/mongodb/mdb-agent-builder.git
+cd mdb-agent-builder
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -e <span class="tok-str">".[dev]"</span></code></pre>
+      </div>
+
+      <div class="steps">
+        <div class="step"><div class="num"></div><div class="body">
+          <h4>Configure your environment</h4>
+          <p>Copy the template and add your MongoDB URI, an LLM key, and a Flask secret.</p>
+        </div></div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="dot" style="background:var(--red)"></span><span class="dot" style="background:var(--amber)"></span><span class="dot" style="background:var(--green)"></span><span class="fname">.env</span></div>
+<pre><code>MONGODB_URI=<span class="tok-str">mongodb://localhost:27017</span>
+MONGODB_DATABASE=<span class="tok-str">agent_builder</span>
+ANTHROPIC_API_KEY=<span class="tok-str">sk-ant-...</span>
+FLASK_SECRET_KEY=<span class="tok-com"># python3 -c "import secrets; print(secrets.token_hex(32))"</span>
+MDB_ADMIN_TOKEN=<span class="tok-com"># required only for admin endpoints</span></code></pre>
+      </div>
+
+      <div class="steps">
+        <div class="step"><div class="num"></div><div class="body">
+          <h4>Scaffold config &amp; run</h4>
+          <p><code>make create-config</code> writes a default <code>config/agents.yaml</code>; then start the dev server.</p>
+        </div></div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="dot" style="background:var(--red)"></span><span class="dot" style="background:var(--amber)"></span><span class="dot" style="background:var(--green)"></span><span class="fname">terminal</span></div>
+<pre><code>make create-config        <span class="tok-com"># scaffold config/, logs/, prompts/</span>
+make validate-config      <span class="tok-com"># sanity-check the YAML</span>
+make run                  <span class="tok-com"># Flask dev server on :5000</span>
+
+curl http://localhost:5000/health
+<span class="tok-com"># → {"status": "healthy", "agent_loaded": true}</span></code></pre>
+      </div>
+
+      <div class="callout info">
+        <span class="co-icon">ℹ︎</span>
+        <p><strong>Dev vs production.</strong> <code>make run</code> starts the single-process Flask dev server bound to
+        <code>127.0.0.1</code>. For production, use <code>make serve-prod GUNICORN_WORKERS=8</code> or the Docker image —
+        both run Gunicorn with MongoDB-backed state so sessions survive restarts and scale across workers.</p>
+      </div>
+    </section>
+
+    <!-- FEATURE MAP -->
+    <section id="features">
+      <span class="label">Concepts</span>
+      <h2>What's in the box</h2>
+      <p class="lead">Every capability is declared in YAML and assembled at load time. Nothing here
+        requires you to write a graph, a retry loop, or a policy check by hand.</p>
+
+      <div class="grid cols-3">
+        <div class="card">
+          <div class="card-icon tint-green">◆</div>
+          <h3>Five agent types</h3>
+          <p>ReAct, Tool-Call, Reflection, Plan-Execute-Replan, and Long-Term Memory — pick one with a single <code>agent_type</code> key.</p>
+        </div>
+        <div class="card">
+          <div class="card-icon tint-blue">⇄</div>
+          <h3>Multi-agent handoffs</h3>
+          <p>Define several agents that transfer control to each other mid-conversation. Triage routes to specialists, specialists route back.</p>
+        </div>
+        <div class="card">
+          <div class="card-icon tint-green">⊞</div>
+          <h3>MongoDB-native tools</h3>
+          <p>Vector search, full-text search, natural-language-to-MQL, a MongoDB toolkit, and any MCP server.</p>
+        </div>
+        <div class="card">
+          <div class="card-icon tint-blue">❋</div>
+          <h3>Long-term memory</h3>
+          <p>Episodic (verbatim recall) and observational (LLM-distilled facts) memory, both backed by Atlas Vector Search.</p>
+        </div>
+        <div class="card">
+          <div class="card-icon tint-amber">⛨</div>
+          <h3>Governance &amp; guardrails</h3>
+          <p>Per-tenant access policies, prompt-injection detection, PII redaction, tool RBAC, and full audit logging.</p>
+        </div>
+        <div class="card">
+          <div class="card-icon tint-green">⟳</div>
+          <h3>Durable &amp; scalable</h3>
+          <p>MongoDB checkpointing and cross-worker session state. Run a fleet of Gunicorn workers against one consistent store.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- AGENT TYPES -->
+    <section id="agent-types">
+      <span class="label">Concepts</span>
+      <h2>Agent types</h2>
+      <p class="lead">Set <code>agent_type</code> in your config. Each type compiles to a different
+        LangGraph topology — but you never touch the graph.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>agent_type</th><th>Behavior</th><th>Best for</th></tr></thead>
+          <tbody>
+            <tr><td><code>react</code></td><td>Thinks step-by-step, calling tools in a reasoning loop</td><td>RAG, tool use, general assistants</td></tr>
+            <tr><td><code>tool_call</code></td><td>OpenAI-style tool calling (alias for <code>react</code>)</td><td>Structured function calling</td></tr>
+            <tr><td><code>reflect</code></td><td>Generate → critique → improve its own answer</td><td>Quality-critical output, review</td></tr>
+            <tr><td><code>plan_execute_replan</code></td><td>Builds a plan, executes steps, replans as needed</td><td>Multi-step research, workflows</td></tr>
+            <tr><td><code>long_term_memory</code></td><td>Vector-store-backed episodic + observational memory</td><td>Personalized, long-lived assistants</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TOOLS & MEMORY -->
+    <section id="tools">
+      <span class="label">Concepts</span>
+      <h2>Tools &amp; memory</h2>
+      <div class="split">
+        <div>
+          <h3>Tool types</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>tool_type</th><th>What it does</th></tr></thead>
+              <tbody>
+                <tr><td><code>vector_search</code></td><td>Semantic search over an Atlas collection</td></tr>
+                <tr><td><code>full_text_search</code></td><td>Lucene full-text search</td></tr>
+                <tr><td><code>nl_to_mql</code></td><td>Translates questions into MongoDB queries</td></tr>
+                <tr><td><code>mongodb_toolkit</code></td><td>A bundle of MongoDB operations</td></tr>
+                <tr><td><code>mcp</code></td><td>Any Model Context Protocol server</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3>Memory systems</h3>
+          <div class="card" style="margin-bottom:12px;">
+            <h4 style="font-family:var(--font-ui);"><span class="badge blue" style="margin-right:6px;">Episodic</span></h4>
+            <p style="font-size:13px;">Stores verbatim conversation snippets — what was said and when — retrieved by semantic similarity.</p>
+          </div>
+          <div class="card">
+            <h4 style="font-family:var(--font-ui);"><span class="badge green" style="margin-right:6px;">Observational</span></h4>
+            <p style="font-size:13px;">An LLM distills raw chat into structured facts — preferences, goals, patterns — each stored as its own vector document.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- GOVERNANCE -->
+    <section id="governance">
+      <span class="label">Concepts</span>
+      <h2>Governance, by configuration</h2>
+      <p class="lead">Flip <code>governance.enabled: true</code> and the framework inserts a single
+        policy-aware enforcement point into every agent — no per-tool wrappers, one auditable choke-point.</p>
+      <div class="grid cols-2">
+        <div class="card"><div class="card-icon tint-amber">⛨</div><h3>Access policies (RBAC)</h3><p>Per-tenant, per-user, per-role policies resolved from MongoDB on each request, cached with a short TTL. Only permitted tools are callable.</p></div>
+        <div class="card"><div class="card-icon tint-red">⚠</div><h3>Input guardrails</h3><p>Blocked-topic rejection and prompt-injection pattern detection run before the agent ever sees the message.</p></div>
+        <div class="card"><div class="card-icon tint-blue">⊘</div><h3>PII redaction</h3><p>Emails and phone numbers are redacted from both input and output. Message content never reaches the logs.</p></div>
+        <div class="card"><div class="card-icon tint-green">▤</div><h3>Audit trail</h3><p>Every allow/deny decision and chat completion is written to an <code>agent_audit_events</code> collection with tenant, user, and thread context.</p></div>
+      </div>
+      <div class="callout warn">
+        <span class="co-icon">⚠</span>
+        <p><strong>Deployment note.</strong> The API has no built-in end-user auth — <code>tenant_id</code>/<code>user_id</code>
+        are asserted by the client. Deploy behind a trusted gateway that authenticates callers and injects identity.
+        Scope any <code>nl_to_mql</code> MongoDB user to read-only.</p>
+      </div>
+    </section>
+
+    <!-- WORKED EXAMPLE -->
+    <section id="example">
+      <span class="label">Reference</span>
+      <h2>A complete agent, end to end</h2>
+      <p class="lead">This is the full config for a governed enterprise-support agent: a local LLM, a
+        vector-search tool over support docs, tenant-scoped retrieval, blocked topics, and audit logging.
+        One file produces a running, policy-enforced service.</p>
+
+      <div class="code">
+        <div class="code-head"><span class="dot" style="background:var(--green)"></span><span class="fname">config/agents.yaml</span><span style="margin-left:auto;" class="badge ghost">governed_enterprise_support</span></div>
+<pre><code><span class="tok-key">embeddings</span>:
+  - <span class="tok-key">name</span>: local_embeddings
+    <span class="tok-key">provider</span>: huggingface
+    <span class="tok-key">model_name</span>: sentence-transformers/all-MiniLM-L6-v2
+
+<span class="tok-key">llms</span>:
+  - <span class="tok-key">name</span>: local_llm
+    <span class="tok-key">provider</span>: ollama
+    <span class="tok-key">model_name</span>: llama3.1
+    <span class="tok-key">temperature</span>: <span class="tok-num">0.1</span>
+
+<span class="tok-key">tools</span>:
+  - <span class="tok-key">name</span>: support_docs
+    <span class="tok-key">tool_type</span>: vector_search       <span class="tok-com"># semantic search over Atlas</span>
+    <span class="tok-key">connection_str</span>: ${MONGODB_URI}
+    <span class="tok-key">namespace</span>: mdb_examples.support_docs
+    <span class="tok-key">embedding_model</span>: local_embeddings
+
+<span class="tok-key">governance</span>:
+  <span class="tok-key">enabled</span>: <span class="tok-num">true</span>
+  <span class="tok-key">connection_str</span>: ${MONGODB_URI}
+  <span class="tok-key">default_policy</span>:
+    <span class="tok-key">permissions</span>: [tools.call.support_docs]   <span class="tok-com"># tool RBAC</span>
+    <span class="tok-key">blocked_topics</span>: [payroll export]          <span class="tok-com"># input guardrail</span>
+    <span class="tok-key">retrieval_filters</span>: { classification: [public, internal] }
+  <span class="tok-key">audit</span>: { enabled: <span class="tok-num">true</span> }                 <span class="tok-com"># every decision logged</span>
+  <span class="tok-key">state</span>: { enabled: <span class="tok-num">true</span> }                 <span class="tok-com"># cross-worker sessions</span>
+
+<span class="tok-key">agent</span>:
+  <span class="tok-key">name</span>: governed_enterprise_support
+  <span class="tok-key">agent_type</span>: react
+  <span class="tok-key">llm</span>: local_llm
+  <span class="tok-key">tools</span>: [support_docs]
+  <span class="tok-key">system_prompt_path</span>: ./prompts/governed_support_system.txt</code></pre>
+      </div>
+
+      <h3>Talk to it</h3>
+      <div class="split">
+        <div class="code" style="margin-top:0;">
+          <div class="code-head"><span class="dot" style="background:var(--blue)"></span><span class="fname">request — POST /chat</span></div>
+<pre><code>curl -X POST localhost:5000/chat \
+  -H <span class="tok-str">"Content-Type: application/json"</span> \
+  -d <span class="tok-str">'{
+    "message": "How do I reset my license?",
+    "config": {
+      "thread_id": "conv-1",
+      "identity": {
+        "tenant_id": "acme-corp",
+        "user_id": "jo@acme.com",
+        "roles": ["support"]
+      }
+    }
+  }'</span></code></pre>
+        </div>
+        <div class="code" style="margin-top:0;">
+          <div class="code-head"><span class="dot" style="background:var(--green)"></span><span class="fname">response — 200 OK</span></div>
+<pre><code>{
+  <span class="tok-key">"response"</span>: <span class="tok-str">"To reset your license,
+     open Settings → License and
+     click Re-issue..."</span>,
+  <span class="tok-key">"history"</span>: [
+    [<span class="tok-str">"user"</span>, <span class="tok-str">"How do I reset..."</span>],
+    [<span class="tok-str">"assistant"</span>, <span class="tok-str">"To reset..."</span>]
+  ],
+  <span class="tok-key">"thread_id"</span>: <span class="tok-str">"conv-1"</span>
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ARCHITECTURE -->
+    <section id="architecture">
+      <span class="label">Reference · for architects</span>
+      <h2>Physical architecture</h2>
+      <p class="lead">A request flows top-to-bottom through five layers. The edge terminates HTTP and
+        enforces limits; the control plane resolves policy and runs guardrails; the agent runtime is a
+        compiled LangGraph; adapters abstract every external system; and MongoDB is the single durable
+        backbone for state, memory, policy, and audit.</p>
+
+      <div class="arch">
+
+        <!-- Client -->
+        <div class="arch-layer">
+          <div class="layer-title">Clients <span class="tag">untrusted</span></div>
+          <div class="node-row">
+            <div class="node accent-black"><div class="n-name">App / Service</div><div class="n-desc">POST /chat, /reset</div></div>
+            <div class="node accent-black"><div class="n-name">Trusted gateway</div><div class="n-desc">authenticates user · injects identity</div></div>
+            <div class="node accent-black"><div class="n-name">Load balancer</div><div class="n-desc">routes on /health</div></div>
+          </div>
+        </div>
+
+        <div class="arch-flow">↓<span class="flow-label">HTTPS · JSON · X-Requested-With</span></div>
+
+        <!-- Edge -->
+        <div class="arch-layer">
+          <div class="layer-title">Edge / API layer <span class="tag">Flask + Gunicorn workers</span></div>
+          <div class="node-row">
+            <div class="node accent-blue"><div class="n-name">Flask app</div><div class="n-desc">app.py · routes</div></div>
+            <div class="node accent-blue"><div class="n-name">Rate limit + CSRF</div><div class="n-desc">60/min chat · 1 MB cap</div></div>
+            <div class="node accent-blue"><div class="n-name">Security headers</div><div class="n-desc">CSP · HSTS · nosniff</div></div>
+            <div class="node accent-blue"><div class="n-name">Identity context</div><div class="n-desc">tenant_id · user_id · roles</div></div>
+          </div>
+        </div>
+
+        <div class="arch-flow">↓<span class="flow-label">IdentityContext</span></div>
+
+        <!-- Control plane -->
+        <div class="arch-layer">
+          <div class="layer-title">Control plane <span class="tag">governance/</span></div>
+          <div class="node-row">
+            <div class="node accent-amber"><div class="n-name">Policy provider</div><div class="n-desc">policies.py · MongoDB · TTL cache</div></div>
+            <div class="node accent-amber"><div class="n-name">Guardrail engine</div><div class="n-desc">guardrails.py · topics · injection · PII</div></div>
+            <div class="node accent-amber"><div class="n-name">Audit sink</div><div class="n-desc">audit/ · allow/deny events</div></div>
+          </div>
+        </div>
+
+        <div class="arch-flow">↓<span class="flow-label">AccessPolicy via LangGraph configurable</span></div>
+
+        <!-- Agent runtime -->
+        <div class="arch-layer">
+          <div class="layer-title">Agent runtime <span class="tag">LangGraph · agents/</span></div>
+          <div class="node-row">
+            <div class="node accent-green"><div class="n-name">Agent factory</div><div class="n-desc">agent_gen.py · builds graph</div></div>
+            <div class="node accent-green"><div class="n-name">LLM ⇄ tool loop</div><div class="n-desc">react · reflect · plan-execute</div></div>
+            <div class="node accent-green"><div class="n-name">Policy-aware tool node</div><div class="n-desc">tool_node.py · enforces RBAC</div></div>
+            <div class="node accent-green"><div class="n-name">Multi-agent router</div><div class="n-desc">multi_agent.py · handoffs</div></div>
+          </div>
+        </div>
+
+        <div class="arch-flow">↓<span class="flow-label">adapter calls</span></div>
+
+        <!-- Adapters -->
+        <div class="arch-layer">
+          <div class="layer-title">Integration adapters <span class="tag">pluggable</span></div>
+          <div class="node-row">
+            <div class="node accent-blue"><div class="n-name">LLM adapters</div><div class="n-desc">Anthropic · Bedrock · Gemini · Grove +</div></div>
+            <div class="node accent-blue"><div class="n-name">Embedding adapters</div><div class="n-desc">Voyage · Cohere · HF · Vertex +</div></div>
+            <div class="node accent-blue"><div class="n-name">Tool adapters</div><div class="n-desc">vector · full-text · nl_to_mql · MCP</div></div>
+            <div class="node accent-blue"><div class="n-name">Memory adapters</div><div class="n-desc">episodic · observational</div></div>
+          </div>
+        </div>
+
+        <div class="arch-flow">↓<span class="flow-label">read / write</span></div>
+
+        <!-- Data plane -->
+        <div class="arch-layer layer-data">
+          <div class="layer-title">Data plane <span class="tag">MongoDB / Atlas</span></div>
+          <div class="node-row">
+            <div class="node accent-green"><div class="n-name">Checkpoints</div><div class="n-desc">LangGraph durable state</div></div>
+            <div class="node accent-green"><div class="n-name">Sessions</div><div class="n-desc">cross-worker history</div></div>
+            <div class="node accent-green"><div class="n-name">Vector + text indexes</div><div class="n-desc">retrieval &amp; memory</div></div>
+            <div class="node accent-green"><div class="n-name">Policies</div><div class="n-desc">agent_policies</div></div>
+            <div class="node accent-green"><div class="n-name">Audit events</div><div class="n-desc">agent_audit_events</div></div>
+          </div>
+        </div>
+
+        <div class="legend">
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--text)"></span> Client / trust boundary</div>
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--blue)"></span> Stateless request path</div>
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--amber)"></span> Control plane</div>
+          <div class="legend-item"><span class="legend-swatch" style="background:var(--green)"></span> Agent runtime + durable data</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- LIFECYCLE -->
+    <section id="lifecycle">
+      <span class="label">Reference · for architects</span>
+      <h2>Request lifecycle</h2>
+      <p class="lead">What actually happens between a client's <code>POST /chat</code> and the response.
+        Governance steps (3, 5, 8) are active only when <code>governance.enabled: true</code>.</p>
+      <div class="lifecycle">
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Edge admission.</b> Flask checks the 1 MB body cap, rate-limit bucket (keyed on IP + tenant + user), and the <code>X-Requested-With</code> CSRF header.</div></div>
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Identity binding.</b> <code>tenant_id</code>, <code>user_id</code>, and <code>roles</code> from the request body become an <code>IdentityContext</code>.</div></div>
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Policy resolution.</b> The MongoDB policy provider returns the matching <code>AccessPolicy</code> (cached with a ~5s TTL) for this tenant/user/role.</div></div>
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Input guardrail.</b> Blocked topics and prompt-injection patterns are checked; PII is redacted. A block returns <code>403</code> before the LLM runs.</div></div>
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Agent invocation.</b> The compiled LangGraph runs the LLM⇄tool loop. The policy is passed through the <code>configurable</code> dict so per-tenant rules apply without rebuilding the graph.</div></div>
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Policy-aware tool calls.</b> Each tool call passes through one enforcement node — denied tools are blocked, retrieval is tenant-scoped, MQL/MCP tools require a <code>tenant_filter</code>.</div></div>
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Output guardrail + persistence.</b> The response is PII-redacted, then history is written to the MongoDB state provider and the LangGraph checkpointer.</div></div>
+        <div class="lc-step"><div class="lc-num"></div><div class="lc-text"><b>Audit + respond.</b> Allow/deny decisions and <code>agent.chat.completed</code> events are logged; the JSON response returns to the client.</div></div>
+      </div>
+    </section>
+
+    <!-- API -->
+    <section id="api">
+      <span class="label">Reference</span>
+      <h2>API endpoints</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Method</th><th>Path</th><th>Purpose</th><th>Auth</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge ghost">GET</span></td><td><code>/health</code></td><td>Liveness — reports whether the agent loaded</td><td>none</td></tr>
+            <tr><td><span class="badge green">POST</span></td><td><code>/chat</code></td><td>Send a message, get a response + history</td><td>identity in body</td></tr>
+            <tr><td><span class="badge amber">POST</span></td><td><code>/reset</code></td><td>Clear a thread (omit <code>thread_id</code> = all)</td><td>CSRF · admin token for global</td></tr>
+            <tr><td><span class="badge ghost">GET</span></td><td><code>/threads</code></td><td>List in-process threads</td><td>X-Admin-Token</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="font-size:13px;">Responses carry hardening headers (<code>Content-Security-Policy</code>, <code>X-Frame-Options: DENY</code>,
+        <code>HSTS</code> on HTTPS). Admin endpoints are disabled entirely unless <code>MDB_ADMIN_TOKEN</code> is set.</p>
+    </section>
+
+    <!-- DEPLOY -->
+    <section id="deploy">
+      <span class="label">Reference</span>
+      <h2>Deployment</h2>
+      <div class="split">
+        <div>
+          <h3>Multi-worker (Gunicorn)</h3>
+          <div class="code" style="margin-top:0;">
+            <div class="code-head"><span class="dot" style="background:var(--green)"></span><span class="fname">terminal</span></div>
+<pre><code>make serve-prod \
+  GUNICORN_WORKERS=8 \
+  PORT=5000</code></pre>
+          </div>
+          <p style="font-size:13px;">Enable <code>state:</code> or <code>governance:</code> in YAML so workers share
+            conversation history through MongoDB.</p>
+        </div>
+        <div>
+          <h3>Docker</h3>
+          <div class="code" style="margin-top:0;">
+            <div class="code-head"><span class="dot" style="background:var(--blue)"></span><span class="fname">terminal</span></div>
+<pre><code>make docker-build
+make docker-run \
+  PORT=5000 \
+  GUNICORN_WORKERS=8</code></pre>
+          </div>
+          <p style="font-size:13px;">The image runs Gunicorn via <code>startup.sh</code>, mounts your <code>config/</code>,
+            and exposes a <code>/health</code> healthcheck.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+      <div class="row">
+        <a href="https://github.com/mongodb/mdb-agent-builder" target="_blank" rel="noopener">GitHub</a>
+        <a href="#quickstart">Quick Start</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#api">API</a>
+      </div>
+      <p style="font-size:12px; color:var(--text-faint);">
+        MDB Agent Builder · built on LangChain, LangGraph &amp; MongoDB · Apache License 2.0.<br>
+        This page follows the project's <code>DESIGN.md</code> — IBM Plex Serif headings, Inter body, Fira Code, MongoDB-adjacent emerald.
+      </p>
+    </footer>
+
+  </main>
+</div>
+
+<script>
+// ---- Dark mode toggle (persisted) ----
+(function () {
+  var root = document.documentElement;
+  var saved = localStorage.getItem('mdb-theme');
+  if (saved) root.setAttribute('data-theme', saved);
+  else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    root.setAttribute('data-theme', 'dark');
+  }
+  var btn = document.getElementById('themeToggle');
+  btn.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    localStorage.setItem('mdb-theme', next);
+  });
+})();
+
+// ---- Scroll spy for side nav ----
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('.sidenav a'));
+  var map = {};
+  links.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    var el = document.getElementById(id);
+    if (el) map[id] = a;
+  });
+  var sections = Object.keys(map).map(function (id) { return document.getElementById(id); });
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        links.forEach(function (l) { l.classList.remove('active'); });
+        if (map[e.target.id]) map[e.target.id].classList.add('active');
+      }
+    });
+  }, { rootMargin: '-40% 0px -55% 0px' });
+  sections.forEach(function (s) { obs.observe(s); });
+})();
+</script>
+</body>
+</html>

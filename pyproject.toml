@@ -40,6 +40,7 @@ dependencies = [
     "langchain-huggingface>=0.0.7",
     "langchain-mongodb>=0.0.2",
     "langchain-voyageai>=0.0.1",
+    "langchain-google-genai>=1.0.0",
     
     # LangGraph
     "langgraph>=0.0.20",

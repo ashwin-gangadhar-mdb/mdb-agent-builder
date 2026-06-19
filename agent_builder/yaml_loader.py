@@ -34,6 +34,7 @@ _YAML_ENV_VAR_ALLOWLIST = [
         "YAML_ENV_VAR_ALLOWLIST",
         "MONGODB_.*,OPENAI_.*,ANTHROPIC_.*,FIREWORKS_.*,COHERE_.*,"
         "TOGETHER_.*,VOYAGEAI_.*,AZURE_.*,GROVE_.*,AWS_.*,"
+        "GOOGLE_.*,GEMINI_.*,"
         "OLLAMA_.*,LOG_LEVEL,FLASK_.*,AGENT_CONFIG_PATH,"
         "CHECKPOINT_.*,PORT,GUNICORN_.*,PYTHONPATH,LANGCHAIN_.*,"
         "MDB_.*,PYTHON.*",
@@ -160,36 +161,18 @@ def load_yaml(file_path) -> dict:
         raise
 
 
-def load_application(config_path: str):
+def load_application(config_path: str, governance_bundle=None):
     """
     Load application components from a YAML configuration file.
 
-    The ``memory:`` section (a list of memory adapter configurations) is now
-    fully wired into the agent.  Each entry is built into a concrete
-    ``BaseMemoryAdapter`` by ``MemoryAdapterFactory`` and then injected into
-    ``AgentConfig.episodic_memory`` / ``AgentConfig.observational_memory``
-    before the agent is created.
-
-    Example ``memory:`` YAML section::
-
-        memory:
-          - name: recall
-            memory_type: episodic
-            connection_str: ${MONGODB_URI}
-            namespace: mydb.episodic_memories
-            embedding_model: my_embedding   # references embeddings section
-            index_name: episodic_index
-
-          - name: observations
-            memory_type: observational
-            connection_str: ${MONGODB_URI}
-            namespace: mydb.observational_memories
-            embedding_model: my_embedding
-            llm: my_llm                     # references llms section
-            index_name: observational_index
+    ...
 
     Args:
         config_path: Path to the YAML configuration file
+        governance_bundle: Optional dict with ``guardrails`` (GuardrailEngine),
+                           ``audit_sink`` (callback), and ``governance`` (dict)
+                           for wrapping tools in PolicyEnforcingTool.  Passed
+                           in by app.py when governance is enabled.
 
     Returns:
         A dictionary containing the loaded application components
@@ -248,6 +231,11 @@ def load_application(config_path: str):
 
         tool_configs = [ToolConfig(**tool) for tool in tools_config]
         result["tools"] = load_tools(tool_configs)
+
+    # A1 — Wrap tools in PolicyEnforcingTool when governance is enabled.
+    # Must happen AFTER tools are loaded but BEFORE the agent graph is
+    # compiled, because tools are baked into the graph at compile time.
+    _maybe_wrap_tools_in_governance(result, config, governance_bundle)
 
     # Load agent with resolved references
     if "agent" in config:
@@ -425,3 +413,73 @@ def _wire_memory_adapters(
                     adapter.__class__.__name__,
                 )
                 break
+
+
+def _maybe_wrap_tools_in_governance(
+    result: dict, config: dict, governance_bundle: Any
+) -> None:
+    """Wrap every loaded tool in ``PolicyEnforcingTool`` if governance is on.
+
+    Called from ``load_application`` immediately after tools are loaded and
+    before the agent graph is compiled.  Only active when
+    ``config['governance']['enabled']`` is true and a governance bundle was
+    supplied that carries a ``GuardrailEngine``.
+
+    Per the plan, ``nl_to_mql`` and ``mongodb_toolkit`` tools are always
+    denied under governance (T8) — their ``AccessPolicy.allows()`` returns
+    ``False`` because no permission grant matches their tool names (the
+    wrapper's ``check_tool`` handles the deny).
+    """
+    if not config.get("governance", {}).get("enabled"):
+        return
+    if not governance_bundle or "guardrails" not in governance_bundle:
+        logger.warning(
+            "Governance enabled but no guardrails in bundle — tools will NOT be wrapped"
+        )
+        return
+
+    from agent_builder.tools.policy_enforcing_tool import wrap_tools
+
+    guardrails = governance_bundle["guardrails"]
+    audit_sink = governance_bundle.get("audit_sink")
+    tools_dict = result.get("tools")
+    if not tools_dict:
+        logger.info("No tools to wrap under governance")
+        return
+
+    tools_list = list(tools_dict.values())
+    wrapped = wrap_tools(tools_list, guardrails, audit_sink)
+    result["tools"] = {tool.name: tool for tool in wrapped}
+    logger.info("Wrapped %d tools with PolicyEnforcingTool under governance", len(wrapped))
+
+    # T12 — warn if governance is on but default policy is empty (fail-open risk)
+    governance_cfg = config.get("governance", {})
+    default_policy = governance_cfg.get("default_policy", {})
+    permissions = default_policy.get("permissions", [])
+    if not permissions:
+        logger.warning(
+            "Governance is enabled but default_policy.permissions is empty. "
+            "Unless MongoDB-backed per-tenant policies exist, ALL tool calls "
+            "will be denied."
+        )
+
+    # T12 — warn on governance + handoffs without explicit grants
+    agents_cfg = config.get("agents", [])
+    if agents_cfg:
+        handoff_agents = [
+            a.get("name") for a in agents_cfg
+            if a.get("handoffs") or a.get("handoff_targets")
+        ]
+        if handoff_agents:
+            transfer_grants = [
+                p for p in permissions
+                if p.startswith("tools.call.transfer_to_")
+            ]
+            if not transfer_grants and "*" not in permissions:
+                logger.warning(
+                    "Governance enabled with handoff agents (%s) but no "
+                    "transfer_to_* permission grants found in default_policy. "
+                    "Handoffs will be denied at runtime unless per-tenant "
+                    "policies grant them.",
+                    ", ".join(handoff_agents),
+                )

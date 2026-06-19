@@ -253,6 +253,68 @@ class OllamaEmbeddingAdapter(BaseEmbeddingAdapter):
         return OllamaEmbeddings(**kwargs)
 
 
+class GoogleGenAIEmbeddingAdapter(BaseEmbeddingAdapter):
+    """Adapter for Google Gemini (Generative AI) embedding models.
+
+    Uses ``langchain_google_genai.GoogleGenerativeAIEmbeddings`` with a Google
+    AI Studio API key.  This is distinct from the ``vertexai`` provider, which
+    targets Vertex AI on Google Cloud and authenticates with GCP credentials.
+
+    Configuration (YAML)::
+
+        embeddings:
+          - name: gemini-embed
+            provider: google              # or the "gemini" alias
+            model_name: models/text-embedding-004
+
+    API key resolution: ``config.api_key`` → ``GOOGLE_API_KEY`` env (set
+    ``GEMINI_API_KEY`` as an override via ``additional_kwargs`` if preferred).
+
+    Note: output dimensionality for the newer embedding models is selected at
+    query time rather than via the constructor, so a configured ``dimensions``
+    value is ignored here (with a debug log) unless explicitly passed through
+    ``additional_kwargs``.
+    """
+
+    def __init__(self, config: EmbeddingConfig) -> None:
+        self._config = config
+
+    def get_embedding_model(self) -> Embeddings:
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+        additional = dict(self._config.additional_kwargs or {})
+        api_key = (
+            self._config.api_key
+            or additional.pop("google_api_key", None)
+            or additional.pop("api_key", None)
+            or os.environ.get("GOOGLE_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+        )
+        if not api_key:
+            raise ValueError(
+                "GOOGLE_API_KEY (or GEMINI_API_KEY) is required for the Google "
+                "Gemini embedding provider. Set the environment variable or pass "
+                "api_key in the configuration."
+            )
+
+        kwargs: Dict[str, Any] = {
+            "model": self._config.model_name,
+            "google_api_key": api_key,
+        }
+        if self._config.dimensions:
+            logger.debug(
+                "Ignoring 'dimensions=%s' for Google Gemini model '%s' "
+                "(output dimensionality is selected at query time).",
+                self._config.dimensions,
+                self._config.model_name,
+            )
+        kwargs.update(additional)
+        logger.debug(
+            "Initialising Google Gemini embedding model: %s", self._config.model_name
+        )
+        return GoogleGenerativeAIEmbeddings(**kwargs)
+
+
 class HuggingFaceEmbeddingAdapter(BaseEmbeddingAdapter):
     """Adapter for HuggingFace sentence-transformer embedding models."""
 
@@ -298,6 +360,8 @@ _ADAPTER_REGISTRY: Dict[str, type] = {
     "voyageai": VoyageAIEmbeddingAdapter,
     "ollama": OllamaEmbeddingAdapter,
     "huggingface": HuggingFaceEmbeddingAdapter,
+    "google": GoogleGenAIEmbeddingAdapter,
+    "gemini": GoogleGenAIEmbeddingAdapter,
 }
 
 

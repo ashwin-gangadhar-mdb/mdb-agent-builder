@@ -52,6 +52,13 @@ class AgentConfig:
     # create_handoff_tool() instances appended to the agent's tool list.
     handoff_targets: List[Any] = field(default_factory=list)
     # ------------------------------------------------------------------
+    # Governance — policy-aware tool node (Approach B)
+    # When set the factory injects a single policy-enforcing ToolNode
+    # instead of wrapping each tool individually.
+    policy: Any = None
+    guardrails: Any = None
+    audit_sink: Any = None
+    # ------------------------------------------------------------------
     # Catch-all
     additional_kwargs: Optional[Dict[str, Any]] = None
 
@@ -210,11 +217,24 @@ def load_agent(config: AgentConfig) -> Any:
     reflection_prompt = config.reflection_prompt
 
     # Prepare kwargs for agent creation
-    agent_kwargs = {
+    agent_kwargs: Dict[str, Any] = {
         "name": config.name,
         "model": config.llm,
         "tools": config.tools or [],
     }
+
+# Governance — pass policy-aware tool-node parameters through to the
+    # agent factory so that Approach B (single-choke-point enforcement)
+    # replaces per-tool wrappers.
+    if config.policy is not None:
+        agent_kwargs["policy"] = config.policy
+        agent_kwargs["guardrails"] = config.guardrails
+        agent_kwargs["audit_sink"] = config.audit_sink
+        agent_kwargs["use_dynamic_policy"] = bool(
+            config.additional_kwargs.get("use_dynamic_policy", False)
+            if config.additional_kwargs
+            else False
+        )
 
     # Add specific parameters based on agent type
     if agent_type in ["react", "tool_call"]:

@@ -68,6 +68,7 @@ class ToolConfig:
     embedding_model: Optional[Any] = None
     llm: Optional[BaseLLM] = None
     servers_config: Optional[Dict[str, Dict[str, Any]]] = None
+    tenant_filter: Optional[Dict[str, Any]] = None
     additional_kwargs: Optional[Dict[str, Any]] = field(default_factory=dict)
 
 

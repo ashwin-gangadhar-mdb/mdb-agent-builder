@@ -6,7 +6,8 @@ Both ``StaticPolicyProvider`` and ``MongoDBPolicyProvider`` implement the
 the abstract contract rather than on concrete provider classes.
 """
 
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent_builder.core.interfaces import BasePolicyAdapter
 from agent_builder.core.types import AccessPolicy, IdentityContext
@@ -30,6 +31,10 @@ class StaticPolicyProvider(BasePolicyAdapter):
         return _policy_from_document(self.default_policy, identity)
 
 
+_CacheKey = Tuple[str, str, str]
+_CacheEntry = Tuple[float, AccessPolicy]
+
+
 class MongoDBPolicyProvider(BasePolicyAdapter):
     """
     Load tenant, role, or user policies from MongoDB.
@@ -37,6 +42,10 @@ class MongoDBPolicyProvider(BasePolicyAdapter):
     Queries the ``agent_policies`` collection for documents that match the
     requesting identity and merges them into a single ``AccessPolicy``.
     Falls back to the default policy when no documents are found.
+
+    Caches resolved policies per identity with a short TTL to avoid the
+    per-request MongoDB lookup.  The cache key is ``(tenant_id, user_id,
+    sorted(roles))``; stale entries are evicted lazily on next read.
     """
 
     def __init__(
@@ -45,6 +54,7 @@ class MongoDBPolicyProvider(BasePolicyAdapter):
         db_name: str = "agent_control_plane",
         collection_name: str = "agent_policies",
         default_policy: Optional[Dict[str, Any]] = None,
+        cache_ttl: float = 5.0,
     ):
         import certifi
         from pymongo import MongoClient
@@ -56,8 +66,25 @@ class MongoDBPolicyProvider(BasePolicyAdapter):
         )
         self.collection = self.client[db_name][collection_name]
         self.default_policy = default_policy or {"permissions": ["*"]}
+        self._cache: Dict[_CacheKey, _CacheEntry] = {}
+        self._cache_ttl = cache_ttl
+
+    def _cache_key(self, identity: IdentityContext) -> _CacheKey:
+        return (
+            identity.tenant_id,
+            identity.user_id,
+            ",".join(sorted(identity.roles)),
+        )
 
     def get_policy(self, identity: IdentityContext) -> AccessPolicy:
+        key = self._cache_key(identity)
+        now = time.monotonic()
+        entry = self._cache.get(key)
+        if entry is not None:
+            ts, policy = entry
+            if now - ts < self._cache_ttl:
+                return policy
+
         query = {
             "tenant_id": identity.tenant_id,
             "$or": [
@@ -69,8 +96,12 @@ class MongoDBPolicyProvider(BasePolicyAdapter):
         docs = list(self.collection.find(query, {"_id": 0}))
         if not docs:
             logger.debug("No policy found for %s, using default policy", identity.user_id)
-            return _policy_from_document(self.default_policy, identity)
-        return _merge_policy_documents(docs, identity)
+            policy = _policy_from_document(self.default_policy, identity)
+        else:
+            policy = _merge_policy_documents(docs, identity)
+
+        self._cache[key] = (now, policy)
+        return policy
 
 
 def _policy_from_document(doc: Dict[str, Any], identity: IdentityContext) -> AccessPolicy:

@@ -2,8 +2,8 @@
 Embeddings loader for various providers using LangChain.
 
 This module provides functionality to load embedding models from different
-providers including Bedrock, SageMaker, VertexAI, Azure, Together, Fireworks,
-Cohere, VoyageAI, and Ollama.
+providers including Bedrock, SageMaker, VertexAI, Google Gemini, Azure,
+Together, Fireworks, Cohere, VoyageAI, Ollama, and HuggingFace.
 
 The loader now delegates all provider-specific construction to the adapter
 classes defined in ``agent_builder.embeddings.adapters``, following the adapter

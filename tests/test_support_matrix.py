@@ -82,6 +82,8 @@ class SupportMatrixTests(unittest.TestCase):
                 "ollama",
                 "sagemaker",
                 "grove",
+                "google",
+                "gemini",
             ]
             if f'"{key}":' in source
         }
@@ -97,6 +99,8 @@ class SupportMatrixTests(unittest.TestCase):
                 "ollama",
                 "sagemaker",
                 "grove",
+                "google",
+                "gemini",
             },
         )
 
@@ -116,6 +120,8 @@ class SupportMatrixTests(unittest.TestCase):
                 "voyageai",
                 "ollama",
                 "huggingface",
+                "google",
+                "gemini",
             ]
             if f'"{key}":' in source
         }
@@ -132,6 +138,8 @@ class SupportMatrixTests(unittest.TestCase):
                 "voyageai",
                 "ollama",
                 "huggingface",
+                "google",
+                "gemini",
             },
         )
 

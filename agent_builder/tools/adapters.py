@@ -83,7 +83,12 @@ class FullTextSearchToolAdapter(BaseToolAdapter):
 
 
 class MongoDBToolkitAdapter(BaseToolAdapter):
-    """Adapter that exposes the full MongoDB toolkit (requires an LLM)."""
+    """Adapter that exposes the full MongoDB toolkit (requires an LLM).
+
+    When *config.tenant_filter* is set, it is merged into the MongoDB
+    connection so that all toolkit operations (list collections, query, etc.)
+    are implicitly scoped to the configured tenant predicate.
+    """
 
     def __init__(self, config: ToolConfig) -> None:
         _check_required_fields(config, ["connection_str", "namespace", "llm"], ToolType.MONGODB_TOOLKIT)
@@ -93,19 +98,30 @@ class MongoDBToolkitAdapter(BaseToolAdapter):
         from agent_builder.tools.mongodb import MongoDBTools
 
         tool_name = self._config.name or "mongodb_toolkit"
+        extra_kwargs = dict(self._config.additional_kwargs or {})
+        tenant_filter = self._config.tenant_filter
+        if tenant_filter:
+            extra_kwargs["tenant_filter"] = tenant_filter
+            logger.info("MongoDB toolkit tool '%s' scoped with tenant_filter=%s",
+                        tool_name, tenant_filter)
         logger.debug("Building MongoDB toolkit: %s", tool_name)
         mongodb_tools = MongoDBTools(
             name=tool_name,
             connection_str=self._config.connection_str,
             namespace=self._config.namespace,
             embedding_model=None,
-            **(self._config.additional_kwargs or {}),
+            **extra_kwargs,
         )
         return mongodb_tools.get_mdb_toolkit(self._config.llm)
 
 
 class NLToMQLToolAdapter(BaseToolAdapter):
-    """Adapter that exposes a natural-language-to-MQL conversion tool."""
+    """Adapter that exposes a natural-language-to-MQL conversion tool.
+
+    When *config.tenant_filter* is set, the generated MQL queries are
+    implicitly constrained to the given predicate, preventing cross-tenant
+    data access from LLM-generated queries.
+    """
 
     def __init__(self, config: ToolConfig) -> None:
         _check_required_fields(config, ["connection_str", "namespace", "llm"], ToolType.NL_TO_MQL)
@@ -115,19 +131,31 @@ class NLToMQLToolAdapter(BaseToolAdapter):
         from agent_builder.tools.mongodb import MongoDBTools
 
         tool_name = self._config.name or "nl_to_mql_tool"
+        extra_kwargs = dict(self._config.additional_kwargs or {})
+        tenant_filter = self._config.tenant_filter
+        if tenant_filter:
+            extra_kwargs["tenant_filter"] = tenant_filter
+            logger.info("NL-to-MQL tool '%s' scoped with tenant_filter=%s",
+                        tool_name, tenant_filter)
         logger.debug("Building NL-to-MQL tool: %s", tool_name)
         mongodb_tools = MongoDBTools(
             name=tool_name,
             connection_str=self._config.connection_str,
             namespace=self._config.namespace,
             embedding_model=None,
-            **(self._config.additional_kwargs or {}),
+            **extra_kwargs,
         )
         return [mongodb_tools.get_nl_to_mql_tool(self._config.llm)]
 
 
 class MCPToolAdapter(BaseToolAdapter):
-    """Adapter that exposes tools sourced from MCP (Model Context Protocol) servers."""
+    """Adapter that exposes tools sourced from MCP (Model Context Protocol) servers.
+
+    *config.tenant_filter*, if set, is forwarded as ``tenant_filter`` metadata
+    in the MCP server configuration so that downstream MCP servers can apply
+    tenant-scoping.  Individual MCP server implementations are responsible for
+    honouring the filter — this adapter only provides the integration point.
+    """
 
     def __init__(self, config: ToolConfig) -> None:
         _check_required_fields(config, ["servers_config"], ToolType.MCP)
@@ -137,9 +165,20 @@ class MCPToolAdapter(BaseToolAdapter):
         from agent_builder.tools.mcp import get_mcp_tools
 
         server_name = self._config.name
+        servers_config: Dict[str, Dict[str, Any]] = dict(
+            self._config.servers_config or {}
+        )
+        tenant_filter = self._config.tenant_filter
+        if tenant_filter:
+            for name in servers_config:
+                servers_config[name] = dict(servers_config[name])
+                existing_meta = servers_config[name].get("metadata", {}) or {}
+                existing_meta["tenant_filter"] = tenant_filter
+                servers_config[name]["metadata"] = existing_meta
+            logger.info("MCP tool '%s' scoped with tenant_filter=%s",
+                        server_name, tenant_filter)
         logger.debug("Building MCP tools for server: %s", server_name)
-        result = get_mcp_tools(self._config.servers_config, server_name)
-        # get_mcp_tools may return a list or a single tool
+        result = get_mcp_tools(servers_config, server_name)
         return result if isinstance(result, list) else [result]
 
 
